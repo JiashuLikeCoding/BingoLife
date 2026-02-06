@@ -59,6 +59,18 @@ struct ContentView: View {
         }, set: { _ in })) {
             DailyCheckinView()
         }
+        // Global AI error surfacing (works across all tabs)
+        .alert("ChatGPT 生成失敗", isPresented: Binding(get: {
+            appState.aiErrorMessage != nil
+        }, set: { _ in
+            appState.aiErrorMessage = nil
+        })) {
+            Button("知道了") {
+                appState.aiErrorMessage = nil
+            }
+        } message: {
+            Text(appState.aiErrorMessage ?? "請稍後再試")
+        }
     }
 }
 
@@ -182,17 +194,6 @@ struct BingoView: View {
             }
         } message: {
             Text("獲得 1 張任務豁免券")
-        }
-        .alert("ChatGPT 生成失敗", isPresented: Binding(get: {
-            appState.aiErrorMessage != nil
-        }, set: { _ in
-            appState.aiErrorMessage = nil
-        })) {
-            Button("知道了") {
-                appState.aiErrorMessage = nil
-            }
-        } message: {
-            Text(appState.aiErrorMessage ?? "請稍後再試")
         }
     }
 
@@ -480,6 +481,9 @@ struct GoalView: View {
                                             },
                                             onDeleteGoal: {
                                                 deleteTarget = .goal(goal)
+                                            },
+                                            onRefreshGuide: {
+                                                appState.regenerateGuideWithAI(for: goal)
                                             }
                                         )
                                     }
@@ -1157,6 +1161,7 @@ struct HabitRow: View {
     let onUpdateSubgoal: (Int, String) -> Void
     let onDeleteSubgoal: (Int) -> Void
     let onDeleteGoal: () -> Void
+    let onRefreshGuide: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -1215,7 +1220,8 @@ struct HabitRow: View {
                     HabitGuideSection(
                         guide: habitGuide,
                         currentStage: currentStage,
-                        resetToken: resetToken
+                        resetToken: resetToken,
+                        onRefresh: onRefreshGuide
                     )
                 }
             }
@@ -1365,35 +1371,73 @@ struct HabitSubgoalSection: View {
 }
 
 struct HabitGuideSection: View {
+    @EnvironmentObject var appState: AppState
     let guide: HabitGuide?
     let currentStage: Int
     let resetToken: Int
+    let onRefresh: () -> Void
     @State private var expandedStages: Set<Int> = []
+    @State private var isRefreshing: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("習慣地圖")
-                .font(Theme.Fonts.body())
-                .fontWeight(.semibold)
-                .foregroundStyle(Theme.textPrimary)
-
-            if let guide {
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(Array(guide.stages.enumerated()), id: \.element.stage) { index, stage in
-                        HabitGuideStageView(
-                            stage: stage,
-                            isCurrent: stage.stage == currentStage,
-                            isExpanded: expandedStages.contains(stage.stage),
-                            isFirst: index == 0,
-                            isLast: index == guide.stages.count - 1,
-                            onToggle: { toggleStage(stage.stage) }
-                        )
-                    }
-                }
-            } else {
-                Text("正在整理這條路徑…")
+            HStack(alignment: .firstTextBaseline) {
+                Text("習慣地圖")
                     .font(Theme.Fonts.body())
-                    .foregroundStyle(Theme.textSecondary)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(Theme.textPrimary)
+                
+                Spacer()
+                
+                if isRefreshing {
+                    ProgressView()
+                        .scaleEffect(0.8)
+                        .progressViewStyle(CircularProgressViewStyle(tint: Theme.textSecondary))
+                } else {
+                    Button(action: {
+                        isRefreshing = true
+                        onRefresh()
+                    }) {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(Theme.textSecondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+            // Only show content when not refreshing
+            if !isRefreshing {
+                if let guide {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(Array(guide.stages.enumerated()), id: \.element.stage) { index, stage in
+                            HabitGuideStageView(
+                                stage: stage,
+                                isCurrent: stage.stage == currentStage,
+                                isExpanded: expandedStages.contains(stage.stage),
+                                isFirst: index == 0,
+                                isLast: index == guide.stages.count - 1,
+                                onToggle: { toggleStage(stage.stage) }
+                            )
+                        }
+                    }
+                } else {
+                    Text("正在整理這條路徑…")
+                        .font(Theme.Fonts.body())
+                        .foregroundStyle(Theme.textSecondary)
+                }
+            }
+        }
+        .onChange(of: guide) { _, newGuide in
+            // When new guide arrives, stop refreshing and show content
+            if newGuide != nil {
+                isRefreshing = false
+            }
+        }
+        .onChange(of: appState.aiErrorMessage) { _, newValue in
+            // If AI failed, stop the spinner so the user sees the placeholder + alert.
+            if newValue != nil {
+                isRefreshing = false
             }
         }
         .onChange(of: resetToken) { _, _ in
@@ -2150,6 +2194,7 @@ struct SettingsView: View {
     @State private var apiKey = ""
     @State private var model = ""
     @State private var showKey = false
+    @State private var showCompletionAlert = false
 
     var body: some View {
         NavigationStack {
@@ -2249,12 +2294,10 @@ struct SettingsView: View {
                                 .buttonStyle(PrimaryButtonStyle())
 
                                 Button(L10n.t("🔄 重新生成所有習慣地圖", appLanguage)) {
-                                    // Regenerate support first (always local, meaningful).
-                                    appState.forceRegenerateGuideLocally(for: "自愛支持")
-                                    // Then regenerate all user goals (use AI for meaningful 21-day guides).
                                     for goal in appState.goals {
-                                        appState.requestHabitGuide(for: goal)
+                                        appState.regenerateGuideWithAI(for: goal)
                                     }
+                                    showCompletionAlert = true
                                 }
                                 .buttonStyle(SecondaryButtonStyle())
 
@@ -2277,6 +2320,19 @@ struct SettingsView: View {
         .onAppear {
             apiKey = appState.openAIKey
             model = appState.openAIModel
+        }
+        .alert("已完成", isPresented: $showCompletionAlert) {
+            Button("好的") {
+                DispatchQueue.main.async {
+                    UIApplication.shared.connectedScenes
+                        .filter({ $0.activationState == .foregroundActive })
+                        .compactMap({ $0 as? UIWindowScene })
+                        .first?.windows
+                        .first?.rootViewController?.dismiss(animated: true)
+                }
+            }
+        } message: {
+            Text("已開始重新生成（完成後會自動更新）")
         }
     }
 }
