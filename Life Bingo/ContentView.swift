@@ -1520,7 +1520,8 @@ struct HabitGuideStepItem: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text(combinedLine)
                     .font(Theme.Fonts.body())
-                    .foregroundStyle(Theme.textPrimary)
+                    .foregroundStyle(step.isCompleted ? Theme.textSecondary : Theme.textPrimary)
+                    .strikethrough(step.isCompleted, color: Theme.textSecondary)
                     .lineLimit(nil)
                     .fixedSize(horizontal: false, vertical: true)
 
