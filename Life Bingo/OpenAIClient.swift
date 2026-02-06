@@ -393,49 +393,89 @@ struct OpenAIClient {
 
     func generateHabitGuide(goal: String) async throws -> HabitGuide {
         let prompt = """
-        你是習慣地圖（Habit Map）設計師。請為「\(goal)」生成一份 5 階段的 Habit Map：
-        - Stage 0：種子（Seed）
-        - Stage 1：發芽（Sprout）
-        - Stage 2：長葉（Leaf）
-        - Stage 3：開花（Bloom）
-        - Stage 4：扎根（Rooted）
+        你是習慣地圖設計師。請為「\(goal)」生成一份 5 階段的 Habit Map。
 
-        你需要先定義「熟練/內化」的明確樣子，並列出這個目標最常見的阻力（frictions）。
+        【第一：熟練定義（必須具體可觀察）】
+        禁止：抽象描述如「自然地做」「成為生活一部份」「養成習慣」「持續執行」。
+        必須：描述「做得到時，外在會出現什麼具體行為/徵兆」。
+        範例（好）：
+        - 「能夠在想到要做時，直接去做，不再需要『心理準備』」
+        - 「偶爾忘記/中斷後，能在 24 小時內自己回來，不需要別人提醒」
+        - 「做這件事時，心裡對自己沒有苛責聲音」
 
-        重要規則：
-        - stages 必須包含 stage 0..4（共 5 個，不能缺）
-        - **每個 stage 產生 5 個 steps（共 25 個 step）**
-        - steps 需依「阻力由低到高」排序（同一 stage 內也要由低到高）
-        - 每個 step 必須與「\(goal)」直接相關，禁止空泛語句
-        - 每個 step 需包含：title / duration / fallback / category / bingoTasks
-        - **每個 step 產生 5 個 bingoTasks**
-          - bingoTasks 是這個 step 當下能做的「最小可執行動作」
-          - 每條長度 6-15 字，具體、可直接執行
-          - 不要包含「每天/每日/天天」等字樣
-        - 嚴格禁止：
-          - 與目標無關的通用放鬆/呼吸/肯定句
-          - 「做一個很小的步驟」「開始行動」等廢話
-          - 「準備」「嘗試」「試著」等模糊動作
+        【第二：阻力分析（必須具體）】
+        禁止：「時間不夠」「懶」「不自律」這種標籤式描述。
+        必須：具體描述「什麼情境/什麼東西/什麼想法」阻礙行動。
+        範例（好）：
+        - 「想到要換運動服，就覺得麻煩」（阻力：怕麻煩的感覺）
+        - 「坐在沙發上後，就不想動」（阻力：舒適區的吸引力）
+        - 「打開運動影片，看不懂要怎麼做」（阻力：不知道第一步）
 
-        請輸出 JSON（只回傳 JSON，不要多任何字）：
+        【第三：五階段與步驟（最重要）】
+        必須包含 5 個 STAGE（stage=0..4）。
+        每個 STAGE 的 steps 數量可以彈性（建議 3–8 步），但每個 stage 至少要有 1 步。
+
+        **STEP 的規則（每一步都是一個具體行動）：**
+        禁止：
+        - 「培養觸發點」「建立儀式」「克服阻力」—— 這些是目標，不是行動
+        - 「Day 1: ...」格式，直接寫行動
+        - 必須是「做 XXX」「選定 XXX」「把 XXX 放好」「打開 XXX」
+        範例（好）：
+        - 「選定明日運動時間」
+        - 「把運動服放在床邊」
+        - 「下載並打開運動 App」
+        - 「穿好運動襪」
+        - 「做 3 下深蹲」
+
+        **BINGO TASKS 的規則（比 step 更細的動作）：**
+        每個 step 產生 bingoTasks（數量彈性，但至少 1 個；必須直接可執行）。
+        禁止：「換心態」「給自己鼓勵」「深呼吸」——除非目標本身是情緒相關。
+        範例（好）：
+        - Step「選定明日運動時間」的 bingoTasks：
+          - 「打開手機日曆」
+          - 「選定明天一個具體時間」
+          - 「設定鬧鐘提醒」
+
+        【嚴格禁止（再次強調）】
+        - 「做一個很小的步驟」「開始行動」「嘗試一下」—— 廢話
+        - 「閉眼呼吸」「對自己說肯定句」—— 無關任務
+        - 任何包含「每天」「每日」「天天」的句子
+
+        【輸出 JSON 格式】
         {
-          "masteryDefinition": "...",
-          "frictions": ["...", "..."],
+          "masteryDefinition": "具體可觀察的熟練狀態（不要 KPI）",
+          "frictions": ["具體阻力1", "具體阻力2", "具體阻力3"],
+          "methodRoute": ["列點式順序方法 10-20 點（每點=可操作行為）"],
           "stages": [
             {
               "stage": 0,
+              "stageName": "種子",
               "steps": [
                 {
-                  "title": "...",
-                  "duration": "...",
-                  "fallback": "...",
-                  "category": "...",
-                  "bingoTasks": ["...","...","...","...","..."]
+                  "stepId": "S1",
+                  "title": "具體行動（做 XXX / 選定 XXX / 把 XXX 放好）",
+                  "duration": "30 秒",
+                  "fallback": "更小版本",
+                  "category": "行為/環境/心理",
+                  "bingoTasks": ["細動作1", "細動作2", "細動作3"]
                 }
               ]
             }
           ]
         }
+
+        【硬性輸出驗證（你必須滿足）】
+        - methodRoute 建議 6–24 點，且每點是可操作行為（禁止抽象口號）。
+        - stages 必須剛好 5 個（stage=0..4），每個 stage 至少 1 個 steps（可彈性）。
+        - 每個 step 必須有 stepId，且 stepId 必須跟 stage 對應：
+          - stage 0: S1..Sn
+          - stage 1: P1..Pn
+          - stage 2: L1..Ln
+          - stage 3: B1..Bn
+          - stage 4: R1..Rn
+        - 每個 step 的 bingoTasks 至少 1 個，且全都是細動作（可直接做，不需要用戶再決定做咩）。
+
+        只回傳 JSON，不要有任何其他文字。
         """
 
         let requestBody: [String: Any] = [
@@ -482,45 +522,47 @@ struct OpenAIClient {
         guard !text.isEmpty, let jsonData = text.data(using: .utf8) else {
             throw OpenAIError.parse("回應內容為空")
         }
-        let responseModel = try JSONDecoder().decode(HabitGuideResponse.self, from: jsonData)
+        
+        // Try to decode, if fails, throw to trigger fallback
+        let responseModel: HabitGuideResponse
+        do {
+            responseModel = try JSONDecoder().decode(HabitGuideResponse.self, from: jsonData)
+        } catch {
+            // Log the raw response for debugging
+            print("AI HabitGuide JSON parsing failed: \(error)")
+            print("Raw response: \(text.prefix(500))")
+            throw OpenAIError.parse("JSON 解析失敗：\(error.localizedDescription)")
+        }
 
         let masteryDefinition = (responseModel.masteryDefinition ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let frictions = (responseModel.frictions ?? [])
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
+        let methodRoute = (responseModel.methodRoute ?? [])
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        // Strict validation: no local fallback templates.
+        try Self.validateHabitGuideResponse(goal: goal, masteryDefinition: masteryDefinition, frictions: frictions, methodRoute: methodRoute, response: responseModel)
 
         let stages = responseModel.stages
             .sorted { $0.stage < $1.stage }
             .map { stage -> HabitStageGuide in
                 let steps = stage.steps.map { step -> HabitGuideStep in
+                    let trimmedStepId = (step.stepId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
                     let trimmedTitle = step.title.trimmingCharacters(in: .whitespacesAndNewlines)
                     let trimmedFallback = step.fallback.trimmingCharacters(in: .whitespacesAndNewlines)
                     let trimmedDuration = step.duration.trimmingCharacters(in: .whitespacesAndNewlines)
-                    let trimmedCategory = step.category.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let trimmedCategory = (step.category ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
 
-                    var tasks = (step.bingoTasks ?? [])
+                    let tasks = (step.bingoTasks ?? [])
                         .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
                         .filter { !$0.isEmpty }
 
-                    if tasks.isEmpty {
-                        // Best-effort local fallback: keep it goal-related and executable.
-                        let base = [trimmedFallback, trimmedTitle]
-                            .map { $0.replacingOccurrences(of: "\n", with: " ") }
-                            .filter { !$0.isEmpty }
-                        tasks = base
-                    }
-
-                    // Ensure we show at least 3 tasks in the map UI.
-                    while tasks.count < 3 {
-                        tasks.append("做 1 分鐘\(goal)")
-                    }
-                    if tasks.count > 5 {
-                        tasks = Array(tasks.prefix(5))
-                    }
-
                     return HabitGuideStep(
                         id: UUID(),
+                        stepId: trimmedStepId,
                         title: trimmedTitle,
                         duration: trimmedDuration,
                         fallback: trimmedFallback,
@@ -536,28 +578,118 @@ struct OpenAIClient {
             goal: goal,
             masteryDefinition: masteryDefinition,
             frictions: frictions,
+            methodRoute: methodRoute,
             stages: stages,
             updatedAt: Date()
         )
+    }
+
+    private static func validateHabitGuideResponse(
+        goal: String,
+        masteryDefinition: String,
+        frictions: [String],
+        methodRoute: [String],
+        response: HabitGuideResponse
+    ) throws {
+        if masteryDefinition.isEmpty {
+            throw OpenAIError.parse("缺少 masteryDefinition")
+        }
+        if frictions.count < 3 {
+            throw OpenAIError.parse("frictions 少於 3 點")
+        }
+        if !(6...24).contains(methodRoute.count) {
+            throw OpenAIError.parse("methodRoute 建議 6–24 點（目前：\(methodRoute.count)）")
+        }
+
+        let stages = response.stages
+        let stageSet = Set(stages.map { $0.stage })
+        if stageSet != Set([0, 1, 2, 3, 4]) {
+            throw OpenAIError.parse("stages 必須包含 stage=0..4")
+        }
+        for s in stages {
+            if s.steps.isEmpty {
+                throw OpenAIError.parse("stage \(s.stage) steps 至少 1 個")
+            }
+            for step in s.steps {
+                let sidRaw = (step.stepId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                if sidRaw.isEmpty {
+                    throw OpenAIError.parse("缺少 stepId")
+                }
+                let expectedPrefix: String = {
+                    switch s.stage {
+                    case 0: return "S"
+                    case 1: return "P"
+                    case 2: return "L"
+                    case 3: return "B"
+                    case 4: return "R"
+                    default: return ""
+                    }
+                }()
+                if !sidRaw.hasPrefix(expectedPrefix) {
+                    throw OpenAIError.parse("stepId \(sidRaw) 與 stage \(s.stage) 不匹配")
+                }
+                // Optional: ensure stepId has a positive index after the prefix (e.g., S1, P3)
+                let idxStr = String(sidRaw.dropFirst(expectedPrefix.count))
+                if let idx = Int(idxStr), idx <= 0 {
+                    throw OpenAIError.parse("stepId \(sidRaw) 序號必須 >= 1")
+                }
+
+                let title = step.title.trimmingCharacters(in: .whitespacesAndNewlines)
+                let fallback = step.fallback.trimmingCharacters(in: .whitespacesAndNewlines)
+                if title.isEmpty || fallback.isEmpty {
+                    throw OpenAIError.parse("step title/fallback 不可為空")
+                }
+
+                let tasks = (step.bingoTasks ?? []).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+                if tasks.isEmpty {
+                    throw OpenAIError.parse("step \(sidRaw) bingoTasks 至少 1 個")
+                }
+            }
+        }
+
+        // Basic hard bans
+        let banned = ["每天", "每日", "天天", "培養觸發點", "建立儀式", "克服阻力", "開始行動", "嘗試一下", "做一個很小的步驟"]
+
+        var allChunks: [String] = [masteryDefinition]
+        allChunks.append(contentsOf: frictions)
+        allChunks.append(contentsOf: methodRoute)
+        for stage in stages {
+            for step in stage.steps {
+                var chunk = step.title + " " + step.fallback
+                if let tasks = step.bingoTasks {
+                    chunk += " " + tasks.joined(separator: " ")
+                }
+                allChunks.append(chunk)
+            }
+        }
+        let allText = allChunks.joined(separator: "\n")
+        for word in banned {
+            if allText.contains(word) {
+                throw OpenAIError.parse("輸出包含禁詞：\(word)")
+            }
+        }
     }
 }
 
 struct HabitGuideResponse: Codable {
     var masteryDefinition: String?
     var frictions: [String]?
+    var methodRoute: [String]?
     var stages: [HabitGuideStageResponse]
 }
 
 struct HabitGuideStageResponse: Codable {
     var stage: Int
+    var stageName: String?  // Accept both index and name
     var steps: [HabitGuideStepResponse]
 }
 
 struct HabitGuideStepResponse: Codable {
+    var stepId: String?
     var title: String
     var duration: String
     var fallback: String
-    var category: String
+    var category: String?
     var bingoTasks: [String]?
 }
 
