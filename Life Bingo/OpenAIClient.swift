@@ -465,7 +465,7 @@ struct OpenAIClient {
         }
 
         【硬性輸出驗證（你必須滿足）】
-        - methodRoute 建議 6–24 點，且每點是可操作行為（禁止抽象口號）。
+        - methodRoute 至少 3 點（越完整越好），且每點是可操作行為（禁止抽象口號）。
         - stages 必須剛好 5 個（stage=0..4），每個 stage 至少 1 個 steps（可彈性）。
         - 每個 step 必須有 stepId，且 stepId 必須跟 stage 對應：
           - stage 0: S1..Sn
@@ -597,8 +597,8 @@ struct OpenAIClient {
         if frictions.count < 3 {
             throw OpenAIError.parse("frictions 少於 3 點")
         }
-        if !(6...24).contains(methodRoute.count) {
-            throw OpenAIError.parse("methodRoute 建議 6–24 點（目前：\(methodRoute.count)）")
+        if methodRoute.count < 3 {
+            throw OpenAIError.parse("methodRoute 至少 3 點（目前：\(methodRoute.count)）")
         }
 
         let stages = response.stages

@@ -128,7 +128,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "set -e\nAPP=\"${TARGET_BUILD_DIR}/${FULL_PRODUCT_NAME}\"\n/usr/bin/xattr -cr \"$APP\" || true\n";
+			shellScript = "set -e\nAPP=\"${TARGET_BUILD_DIR}/${FULL_PRODUCT_NAME}\"\necho \"[Strip xattrs] target: $APP\"\n# Remove problematic metadata that breaks codesign\n/usr/bin/xattr -dr com.apple.FinderInfo \"$APP\" || true\n/usr/bin/xattr -dr com.apple.ResourceFork \"$APP\" || true\n/usr/bin/xattr -cr \"$APP\" || true\n# Print remaining xattrs for debugging (if any)\n/usr/bin/xattr -lr \"$APP\" 2>/dev/null || true\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
