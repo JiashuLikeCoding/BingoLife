@@ -489,8 +489,17 @@ struct OpenAIClient {
           ]
         }
 
+        【第一：研究分析（必須先做，然後才寫 steps）】
+        你要先想清楚「用戶為何做不到」以及「點樣先會養成」，並把分析落地成可執行策略：
+        - frictions：至少 3 點，且每點要具體（要有情境/原因，例如「下班太累」「換衫麻煩」「落雨冇地方」），禁止只寫「沒時間/沒動力」呢種泛句。
+        - methodRoute：至少 3 點，但建議 8–20 點；每點必須是「可操作行為」，而且整體路線必須覆蓋：
+          1) 觸發情境（例如：起床後/晚飯後/返到屋企）
+          2) 替代方案（例如：雨天/太累/時間碎片化時的低配版本）
+          3) 中斷後回復（例如：錯過一次後的回歸最小版本）
+          4) 漸進策略（如何從零→可重複→能抗干擾→能自我修復）
+
         【硬性輸出驗證（你必須滿足）】
-        - methodRoute 至少 3 點（越完整越好），且每點是可操作行為（禁止抽象口號）。
+        - methodRoute 至少 3 點（越完整越好），且每點是可操作行為（禁止抽象口號），並且必須包含「觸發情境/替代方案/中斷後回復」的內容。
         - stages 必須剛好 5 個（stage=0..4），每個 stage 至少 1 個 steps（可彈性）。
         - 每個 step 必須有 stepId，且 stepId 必須跟 stage 對應：
           - stage 0: S1..Sn
@@ -630,11 +639,57 @@ struct OpenAIClient {
             throw OpenAIError.parse("methodRoute 至少 3 點（目前：\(methodRoute.count)）")
         }
 
+        // Force "research analysis" to be reflected in the methodRoute, not just time-scaling.
+        // We keep this heuristic-based (keyword presence) to reduce failure rates while still enforcing intent.
+        let routeText = methodRoute.joined(separator: "\n")
+        func containsAny(_ keywords: [String]) -> Bool {
+            keywords.contains { routeText.localizedCaseInsensitiveContains($0) }
+        }
+        let hasTriggerDesign = containsAny(["觸發", "時機", "之後", "起床", "晚飯", "下班", "after", "when"])
+        let hasVariants = containsAny(["替代", "如果", "或", "雨", "太累", "室內", "戶外", "instead", "otherwise", "variant"])
+        let hasRecovery = containsAny(["中斷", "恢復", "回歸", "重新開始", "回來", "recover", "resume", "restart"])
+        if !hasTriggerDesign {
+            throw OpenAIError.parse("methodRoute 必須包含：觸發情境（何時做/什麼時機）")
+        }
+        if !hasVariants {
+            throw OpenAIError.parse("methodRoute 必須包含：替代方案（太累/雨天/時間少時的低配版本）")
+        }
+        if !hasRecovery {
+            throw OpenAIError.parse("methodRoute 必須包含：中斷後回復（錯過後如何回歸最小版本）")
+        }
+
+        // Encourage frictions to be concrete (avoid overly generic one-liners).
+        let genericFrictionPhrases = ["沒時間", "時間不足", "缺乏時間", "沒動力", "缺乏動力", "懶"]
+        let genericFrictionCount = frictions.filter { f in
+            genericFrictionPhrases.contains { p in f.contains(p) } && f.count <= 6
+        }.count
+        if genericFrictionCount >= 2 {
+            throw OpenAIError.parse("frictions 太泛：請用具體情境/原因描述（例如下班太累、換衫麻煩、落雨冇地方）")
+        }
+
         let stages = response.stages
         let stageSet = Set(stages.map { $0.stage })
         if stageSet != Set([0, 1, 2, 3, 4]) {
             throw OpenAIError.parse("stages 必須包含 stage=0..4")
         }
+
+        // If the goal specifies a concrete target duration (e.g., "30 分鐘" / "30 minutes"),
+        // enforce that stage 4 includes at least one step that clearly reaches that target.
+        func extractTargetMinutes(from text: String) -> Int? {
+            let patterns = ["(\\d{1,3})\\s*分鐘", "(\\d{1,3})\\s*分", "(\\d{1,3})\\s*minutes", "(\\d{1,3})\\s*mins", "(\\d{1,3})\\s*min"]
+            for p in patterns {
+                if let regex = try? NSRegularExpression(pattern: p, options: [.caseInsensitive]) {
+                    let range = NSRange(text.startIndex..<text.endIndex, in: text)
+                    if let match = regex.firstMatch(in: text, options: [], range: range), match.numberOfRanges >= 2,
+                       let r1 = Range(match.range(at: 1), in: text) {
+                        return Int(text[r1])
+                    }
+                }
+            }
+            return nil
+        }
+        let targetMinutes = extractTargetMinutes(from: goal)
+        var stage4CombinedText: String = ""
         for s in stages {
             if s.steps.isEmpty {
                 throw OpenAIError.parse("stage \(s.stage) steps 至少 1 個")
@@ -665,8 +720,16 @@ struct OpenAIClient {
 
                 let title = step.title.trimmingCharacters(in: .whitespacesAndNewlines)
                 let fallback = step.fallback.trimmingCharacters(in: .whitespacesAndNewlines)
+                let duration = step.duration.trimmingCharacters(in: .whitespacesAndNewlines)
                 if title.isEmpty || fallback.isEmpty {
                     throw OpenAIError.parse("step title/fallback 不可為空")
+                }
+
+                if s.stage == 4 {
+                    stage4CombinedText += "\n" + title + " " + duration + " " + fallback
+                    if let tasks = step.bingoTasks {
+                        stage4CombinedText += " " + tasks.joined(separator: " ")
+                    }
                 }
 
                 let tasks = (step.bingoTasks ?? []).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
@@ -680,6 +743,16 @@ struct OpenAIClient {
                         throw OpenAIError.parse("step \(sidRaw) requiredBingoCount 必須 1–3")
                     }
                 }
+            }
+        }
+
+        if let targetMinutes, targetMinutes >= 10 {
+            let needle = String(targetMinutes)
+            let hasTargetInStage4 = stage4CombinedText.contains(needle) && (
+                stage4CombinedText.contains("分") || stage4CombinedText.localizedCaseInsensitiveContains("min")
+            )
+            if !hasTargetInStage4 {
+                throw OpenAIError.parse("目標包含 \(targetMinutes) 分鐘，但 stage 4 必須包含可達到該時長的核心行為 step")
             }
         }
 
