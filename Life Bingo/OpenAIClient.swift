@@ -530,7 +530,7 @@ struct OpenAIClient {
                     "type": "json_object"
                 ]
             ],
-            "max_output_tokens": 2000
+            "max_output_tokens": 3500
         ]
 
         var request = URLRequest(url: URL(string: "https://api.openai.com/v1/responses")!)
@@ -548,12 +548,24 @@ struct OpenAIClient {
             throw OpenAIError.server(message)
         }
 
-        let decoded = try JSONDecoder().decode(OpenAIResponse.self, from: data)
-        if let error = decoded.error {
-            throw OpenAIError.server(error.message)
+        let text: String
+        do {
+            let decoded = try JSONDecoder().decode(OpenAIResponse.self, from: data)
+            if let error = decoded.error {
+                throw OpenAIError.server(error.message)
+            }
+            text = decoded.outputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        } catch {
+            // Fallback: API response format may vary; attempt to recover by treating it as raw text.
+            let raw = String(data: data, encoding: .utf8) ?? ""
+            // If the raw payload itself is JSON for our target schema, try to extract the first JSON object.
+            if let start = raw.firstIndex(of: "{"), let end = raw.lastIndex(of: "}") , start < end {
+                text = String(raw[start...end]).trimmingCharacters(in: .whitespacesAndNewlines)
+            } else {
+                throw OpenAIError.parse("cannot parse response")
+            }
         }
 
-        let text = decoded.outputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, let jsonData = text.data(using: .utf8) else {
             throw OpenAIError.parse("回應內容為空")
         }
