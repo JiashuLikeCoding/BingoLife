@@ -392,8 +392,17 @@ struct OpenAIClient {
     }
 
     func generateHabitGuide(goal: String) async throws -> HabitGuide {
+        // Avoid echoing user-entered cadence words that are banned in AI output.
+        // We keep the original goal for UI display elsewhere, but prompt the model with a neutral phrasing.
+        let sanitizedGoal = goal
+            .replacingOccurrences(of: "每天", with: "")
+            .replacingOccurrences(of: "每日", with: "")
+            .replacingOccurrences(of: "天天", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
         let prompt = """
-        你是習慣地圖設計師。請為「\(goal)」生成一份 5 階段的 Habit Map。
+        你是習慣地圖設計師。請為「\(sanitizedGoal.isEmpty ? goal : sanitizedGoal)」生成一份 5 階段的 Habit Map。
+        注意：使用者輸入的目標可能包含「每天/每日/天天」等字樣，但你在任何輸出欄位都不得重複這些字樣；請用不含頻率詞的描述來寫所有步驟與任務。
 
         【第一：熟練定義（必須具體可觀察）】
         禁止：抽象描述如「自然地做」「成為生活一部份」「養成習慣」「持續執行」。
