@@ -481,6 +481,7 @@ struct OpenAIClient {
                   "duration": "30 秒",
                   "fallback": "更小版本",
                   "category": "行為/環境/心理",
+                  "requiredBingoCount": 2,
                   "bingoTasks": ["細動作1", "細動作2", "細動作3"]
                 }
               ]
@@ -497,6 +498,7 @@ struct OpenAIClient {
           - stage 2: L1..Ln
           - stage 3: B1..Bn
           - stage 4: R1..Rn
+        - 每個 step 必須包含 requiredBingoCount（1–3，代表完成幾個 Bingo 任務先算完成該 step）。
         - 每個 step 的 bingoTasks 至少 1 個，且全都是細動作（可直接做，不需要用戶再決定做咩）。
 
         只回傳 JSON，不要有任何其他文字。
@@ -584,6 +586,7 @@ struct OpenAIClient {
                         .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
                         .filter { !$0.isEmpty }
 
+                    let required = max(1, min(3, step.requiredBingoCount ?? 1))
                     return HabitGuideStep(
                         id: UUID(),
                         stepId: trimmedStepId,
@@ -591,6 +594,8 @@ struct OpenAIClient {
                         duration: trimmedDuration,
                         fallback: trimmedFallback,
                         category: trimmedCategory,
+                        requiredBingoCount: required,
+                        completedBingoCount: 0,
                         isCompleted: false,
                         bingoTasks: tasks
                     )
@@ -668,6 +673,13 @@ struct OpenAIClient {
                 if tasks.isEmpty {
                     throw OpenAIError.parse("step \(sidRaw) bingoTasks 至少 1 個")
                 }
+
+                // requiredBingoCount: optional, but if provided it must be 1...3
+                if let req = step.requiredBingoCount {
+                    if !(1...3).contains(req) {
+                        throw OpenAIError.parse("step \(sidRaw) requiredBingoCount 必須 1–3")
+                    }
+                }
             }
         }
 
@@ -714,6 +726,7 @@ struct HabitGuideStepResponse: Codable {
     var duration: String
     var fallback: String
     var category: String?
+    var requiredBingoCount: Int?
     var bingoTasks: [String]?
 }
 

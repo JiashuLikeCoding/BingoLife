@@ -127,7 +127,7 @@ struct BingoView: View {
                             .foregroundStyle(Theme.textSecondary)
                         Spacer()
                         Button(L10n.t("換一換", appLanguage)) {
-                            appState.refreshBoardByUser()
+                            appState.refreshBoardByUser(useAI: true)
                         }
                         .font(Theme.Fonts.caption())
                         .padding(.horizontal, 10)
@@ -403,7 +403,7 @@ struct GoalView: View {
     var body: some View {
         AppBackground {
             ScrollView {
-                VStack(spacing: 18) {
+                VStack(spacing: 12) {
                     Card {
                         VStack(alignment: .leading, spacing: 12) {
                             HStack {
@@ -699,7 +699,7 @@ struct RecordView: View {
         NavigationStack {
             AppBackground {
                 ScrollView {
-                    VStack(spacing: 18) {
+                    VStack(spacing: 12) {
                         Card {
                             VStack(alignment: .leading, spacing: 12) {
                                 Text("我的目標")
@@ -771,7 +771,7 @@ struct GoodDeedView: View {
         NavigationStack {
             AppBackground {
                 ScrollView {
-                    VStack(spacing: 18) {
+                    VStack(spacing: 12) {
                         Card {
                             VStack(alignment: .leading, spacing: 10) {
                                 Text("我很棒，因為我")
@@ -1740,7 +1740,7 @@ struct GratitudeView: View {
         NavigationStack {
             AppBackground {
                 ScrollView {
-                    VStack(spacing: 18) {
+                    VStack(spacing: 12) {
                         Card {
                             VStack(alignment: .leading, spacing: 12) {
                                 Text("我感恩今天，因為")
@@ -1977,7 +1977,7 @@ struct UpgradeView: View {
     var body: some View {
         AppBackground {
             ScrollView {
-                VStack(spacing: 18) {
+                VStack(spacing: 12) {
                     Card {
                         VStack(alignment: .leading, spacing: 12) {
                             Text("等級")
@@ -2088,7 +2088,7 @@ struct DailyCheckinView: View {
         NavigationStack {
             AppBackground {
                 ScrollView {
-                    VStack(spacing: 18) {
+                    VStack(spacing: 12) {
                         Card {
                             VStack(alignment: .leading, spacing: 12) {
                                 Text("今天的狀態")
@@ -2200,7 +2200,7 @@ struct SettingsView: View {
         NavigationStack {
             AppBackground {
                 ScrollView {
-                    VStack(spacing: 18) {
+                    VStack(spacing: 12) {
                         Card {
                             VStack(alignment: .leading, spacing: 12) {
                                 Text(L10n.t("外觀與語言", appLanguage))
@@ -2340,9 +2340,12 @@ struct SettingsView: View {
 struct OnboardingView: View {
     @EnvironmentObject var appState: AppState
     @Environment(\.appLanguage) private var appLanguage
+
+    @State private var page: Int = 0
     @State private var goalsText = ""
     @State private var apiKey = ""
     @State private var showKey = false
+
     private let features: [IntroFeature] = [
         IntroFeature(icon: "square.grid.3x3", title: "Bingo 任務", detail: "AI 依你的目標生成 3x3 任務，都是 30 分鐘內可完成的小行動。"),
         IntroFeature(icon: "arrow.triangle.2.circlepath", title: "換一換", detail: "每次換一換都重新請 AI 生成，會避開上次與已完成任務。"),
@@ -2351,6 +2354,7 @@ struct OnboardingView: View {
         IntroFeature(icon: "leaf", title: "習慣地圖", detail: "用地圖/足跡看到自己的節奏，不比較、不逼迫。"),
         IntroFeature(icon: "gift", title: "獎勵自己", detail: "用 coin 兌換延後滿足的獎勵，讓好事慢慢發生。")
     ]
+
     private let flowSteps: [String] = [
         "設定你想好好生活的目標",
         "每天完成 0–9 格都算成功",
@@ -2358,111 +2362,26 @@ struct OnboardingView: View {
         "長按未完成格子可使用豁免"
     ]
 
+    private var canStart: Bool {
+        !goalsText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+        !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     var body: some View {
         NavigationStack {
             AppBackground {
-                ScrollView {
-                    VStack(spacing: 18) {
-                        Card {
-                            VStack(alignment: .leading, spacing: 12) {
-                                Text(L10n.t("開始之前", appLanguage))
-                                    .font(Theme.Fonts.headline(20))
-                                    .fontWeight(.semibold)
-                                Text("這是一個讓你「慢慢開始」的 App。先感覺到安全，再慢慢往前。")
-                                    .font(Theme.Fonts.body())
-                                    .foregroundStyle(Theme.textSecondary)
-                            }
-                        }
-
-                        Card {
-                            VStack(alignment: .leading, spacing: 12) {
-                                Text("你會在這裡做什麼")
-                                    .font(Theme.Fonts.body())
-                                    .fontWeight(.semibold)
-                                VStack(spacing: 10) {
-                                    ForEach(features) { feature in
-                                        IntroFeatureRow(feature: feature)
-                                    }
-                                }
-                            }
-                        }
-
-                        Card {
-                            VStack(alignment: .leading, spacing: 12) {
-                                Text("使用流程")
-                                    .font(Theme.Fonts.body())
-                                    .fontWeight(.semibold)
-                                VStack(alignment: .leading, spacing: 8) {
-                                    ForEach(Array(flowSteps.enumerated()), id: \.offset) { index, step in
-                                        HStack(alignment: .top, spacing: 10) {
-                                            Text("\(index + 1)")
-                                                .font(Theme.Fonts.caption())
-                                                .foregroundStyle(.white)
-                                                .frame(width: 20, height: 20)
-                                                .background(Theme.accent)
-                                                .clipShape(Circle())
-                                            Text(step)
-                                                .font(Theme.Fonts.body())
-                                                .foregroundStyle(Theme.textPrimary)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        Card {
-                            VStack(alignment: .leading, spacing: 12) {
-                                Text("資料與隱私")
-                                    .font(Theme.Fonts.body())
-                                    .fontWeight(.semibold)
-                                Text("所有資料先保存在本機，你可以隨時刪除或修改。")
-                                    .font(Theme.Fonts.body())
-                                    .foregroundStyle(Theme.textSecondary)
-                            }
-                        }
-
-                        Card {
-                            VStack(alignment: .leading, spacing: 12) {
-                                Text(L10n.t("你的目標", appLanguage))
-                                    .font(Theme.Fonts.caption())
-                                    .foregroundStyle(Theme.textSecondary)
-                                TextField("例如：早睡、運動、閱讀", text: $goalsText)
-                                    .themedField()
-                            }
-                        }
-
-                        Card {
-                            VStack(alignment: .leading, spacing: 12) {
-                                Text(L10n.t("ChatGPT API Key", appLanguage))
-                                    .font(Theme.Fonts.caption())
-                                    .foregroundStyle(Theme.textSecondary)
-                                if showKey {
-                                    TextField(L10n.t("輸入 API Key", appLanguage), text: $apiKey)
-                                        .themedField()
-                                } else {
-                                    SecureField(L10n.t("輸入 API Key", appLanguage), text: $apiKey)
-                                        .themedField()
-                                }
-                                Text("這個金鑰只用來生成你的 Bingo 任務。")
-                                    .font(Theme.Fonts.body())
-                                    .foregroundStyle(Theme.textSecondary)
-                                Button(showKey ? L10n.t("隱藏金鑰", appLanguage) : L10n.t("顯示金鑰", appLanguage)) {
-                                    showKey.toggle()
-                                }
-                                .buttonStyle(SecondaryButtonStyle())
-                            }
-                        }
-
-                        Button(L10n.t("開始", appLanguage)) {
-                            appState.completeOnboarding(goalText: goalsText, apiKey: apiKey)
-                        }
-                        .buttonStyle(PrimaryButtonStyle())
-                        .disabled(goalsText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
-                                  apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                VStack(spacing: 0) {
+                    TabView(selection: $page) {
+                        pageWelcome.tag(0)
+                        pageWhatYouDo.tag(1)
+                        pageFlowAndPrivacy.tag(2)
+                        pageSetup.tag(3)
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.top, 24)
-                    .padding(.bottom, 40)
+                    .tabViewStyle(.page(indexDisplayMode: .always))
+
+                    onboardingControls
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 14)
                 }
             }
             .navigationTitle(L10n.t("歡迎", appLanguage))
@@ -2470,7 +2389,198 @@ struct OnboardingView: View {
         }
         .interactiveDismissDisabled(true)
     }
+
+    // MARK: - Pages
+
+    private var pageWelcome: some View {
+        ScrollView {
+            VStack(spacing: 12) {
+                Card {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text(L10n.t("開始之前", appLanguage))
+                            .font(Theme.Fonts.headline(20))
+                            .fontWeight(.semibold)
+                        Text("這是一個讓你「慢慢開始」的 App。先感覺到安全，再慢慢往前。")
+                            .font(Theme.Fonts.body())
+                            .foregroundStyle(Theme.textSecondary)
+
+                        Divider().foregroundStyle(Theme.border)
+
+                        Text("今天你只要做一件事")
+                            .font(Theme.Fonts.body())
+                            .fontWeight(.semibold)
+                        Text("設定一個你想好好生活的目標，然後開始用最小的步子前進。")
+                            .font(Theme.Fonts.body())
+                            .foregroundStyle(Theme.textSecondary)
+                    }
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 24)
+            .padding(.bottom, 16)
+        }
+    }
+
+
+    private var pageWhatYouDo: some View {
+        ScrollView {
+            VStack(spacing: 12) {
+                Card {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("你會在這裡做什麼")
+                            .font(Theme.Fonts.headline(20))
+                            .fontWeight(.semibold)
+                        Text("用很小、很具體的任務，把生活慢慢拉回來。")
+                            .font(Theme.Fonts.body())
+                            .foregroundStyle(Theme.textSecondary)
+
+                        Divider().foregroundStyle(Theme.border)
+
+                        VStack(spacing: 10) {
+                            ForEach(features) { feature in
+                                IntroFeatureRow(feature: feature)
+                            }
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 24)
+            .padding(.bottom, 16)
+        }
+    }
+
+
+    private var pageFlowAndPrivacy: some View {
+        ScrollView {
+            VStack(spacing: 12) {
+                Card {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("使用流程")
+                            .font(Theme.Fonts.headline(20))
+                            .fontWeight(.semibold)
+                        VStack(alignment: .leading, spacing: 8) {
+                            ForEach(Array(flowSteps.enumerated()), id: \.offset) { index, step in
+                                HStack(alignment: .top, spacing: 10) {
+                                    Text("\(index + 1)")
+                                        .font(Theme.Fonts.caption())
+                                        .foregroundStyle(.white)
+                                        .frame(width: 20, height: 20)
+                                        .background(Theme.accent)
+                                        .clipShape(Circle())
+                                    Text(step)
+                                        .font(Theme.Fonts.body())
+                                        .foregroundStyle(Theme.textPrimary)
+                                }
+                            }
+                        }
+
+                        Divider().foregroundStyle(Theme.border)
+
+                        Text("資料與隱私")
+                            .font(Theme.Fonts.headline(20))
+                            .fontWeight(.semibold)
+                        Text("所有資料先保存在本機，你可以隨時刪除或修改。")
+                            .font(Theme.Fonts.body())
+                            .foregroundStyle(Theme.textSecondary)
+                    }
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 24)
+            .padding(.bottom, 16)
+        }
+    }
+
+
+    private var pageSetup: some View {
+        ScrollView {
+            VStack(spacing: 12) {
+                Card {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("設定")
+                            .font(Theme.Fonts.headline(20))
+                            .fontWeight(.semibold)
+                        Text("最後一步：輸入你的目標，和（可選）用來生成任務的 API Key。")
+                            .font(Theme.Fonts.body())
+                            .foregroundStyle(Theme.textSecondary)
+
+                        Divider().foregroundStyle(Theme.border)
+
+                        Text(L10n.t("你的目標", appLanguage))
+                            .font(Theme.Fonts.caption())
+                            .foregroundStyle(Theme.textSecondary)
+                        TextField("例如：早睡、運動、閱讀", text: $goalsText)
+                            .themedField()
+
+                        Divider().foregroundStyle(Theme.border)
+
+                        Text(L10n.t("ChatGPT API Key", appLanguage))
+                            .font(Theme.Fonts.caption())
+                            .foregroundStyle(Theme.textSecondary)
+
+                        if showKey {
+                            TextField(L10n.t("輸入 API Key", appLanguage), text: $apiKey)
+                                .themedField()
+                        } else {
+                            SecureField(L10n.t("輸入 API Key", appLanguage), text: $apiKey)
+                                .themedField()
+                        }
+
+                        Text("這個金鑰只用來生成你的 Bingo 任務。")
+                            .font(Theme.Fonts.body())
+                            .foregroundStyle(Theme.textSecondary)
+
+                        Button(showKey ? L10n.t("隱藏金鑰", appLanguage) : L10n.t("顯示金鑰", appLanguage)) {
+                            showKey.toggle()
+                        }
+                        .buttonStyle(SecondaryButtonStyle())
+                    }
+                }
+
+                Button(L10n.t("開始", appLanguage)) {
+                    appState.completeOnboarding(goalText: goalsText, apiKey: apiKey)
+                }
+                .buttonStyle(PrimaryButtonStyle())
+                .disabled(!canStart)
+                .padding(.top, 4)
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 24)
+            .padding(.bottom, 16)
+        }
+    }
+
+
+    // MARK: - Controls
+
+    private var onboardingControls: some View {
+        HStack(spacing: 10) {
+            Button(L10n.t("上一頁", appLanguage)) {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    page = max(0, page - 1)
+                }
+            }
+            .buttonStyle(SecondaryButtonStyle())
+            .disabled(page == 0)
+
+            Button(page == 3 ? L10n.t("開始", appLanguage) : L10n.t("下一頁", appLanguage)) {
+                if page == 3 {
+                    if canStart {
+                        appState.completeOnboarding(goalText: goalsText, apiKey: apiKey)
+                    }
+                } else {
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        page = min(3, page + 1)
+                    }
+                }
+            }
+            .buttonStyle(PrimaryButtonStyle())
+            .disabled(page == 3 && !canStart)
+        }
+    }
 }
+
 
 struct IntroFeature: Identifiable {
     let id = UUID()

@@ -57,6 +57,8 @@ final class AppState: ObservableObject {
     @Published var gratitudeEntries: [GratitudeEntry]
 
     @Published var boardSizePreference: Int
+    /// Last 3 "換一換" boards (titles only), for similarity avoidance.
+    @Published var shuffleHistory: [[String]]
 
     // MARK: - UI state
 
@@ -101,6 +103,7 @@ final class AppState: ObservableObject {
         self.goodDeeds = []
         self.gratitudeEntries = []
         self.boardSizePreference = 3
+        self.shuffleHistory = []
 
         self.openAIKey = OpenAIStore.apiKey
         self.openAIModel = OpenAIStore.model
@@ -161,6 +164,7 @@ final class AppState: ObservableObject {
             goodDeeds = decoded.goodDeeds
             gratitudeEntries = decoded.gratitudeEntries
             boardSizePreference = decoded.boardSizePreference
+            shuffleHistory = decoded.shuffleHistory
         } catch {
             // If decoding fails, start fresh.
             aiErrorMessage = "資料讀取失敗，已重置：\(error.localizedDescription)"
@@ -191,7 +195,8 @@ final class AppState: ObservableObject {
             skipTickets: skipTickets,
             goodDeeds: goodDeeds,
             gratitudeEntries: gratitudeEntries,
-            boardSizePreference: boardSizePreference
+            boardSizePreference: boardSizePreference,
+            shuffleHistory: shuffleHistory
         )
 
         do {
@@ -437,11 +442,11 @@ final class AppState: ObservableObject {
 
     // MARK: - Bingo board generation
 
-    func refreshBoardByUser() {
-        Task { await regenerateBoardCells() }
+    func refreshBoardByUser(useAI: Bool = false) {
+        Task { await regenerateBoardCells(useAI: useAI) }
     }
 
-    private func regenerateBoardCells() async {
+    private func regenerateBoardCells(useAI: Bool) async {
         guard !isGeneratingTasks else { return }
         isGeneratingTasks = true
         defer { isGeneratingTasks = false }
@@ -477,18 +482,212 @@ final class AppState: ObservableObject {
 
         let usedTitles = Set(board.cells.map { $0.title })
 
-        var candidates = buildCandidateCells(excludingTitles: usedTitles)
+        var habitCandidates: [BingoCell] = []
+        var supportCandidates: [BingoCell] = []
+
+        func normalized(_ s: String) -> String {
+            s.lowercased()
+                .replacingOccurrences(of: " ", with: "")
+                .replacingOccurrences(of: "，", with: "")
+                .replacingOccurrences(of: "。", with: "")
+                .replacingOccurrences(of: "、", with: "")
+                .replacingOccurrences(of: "！", with: "")
+                .replacingOccurrences(of: "？", with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        func bigrams(_ s: String) -> Set<String> {
+            let chars = Array(s)
+            guard chars.count >= 2 else { return [] }
+            var set: Set<String> = []
+            for i in 0..<(chars.count - 1) {
+                set.insert(String(chars[i]) + String(chars[i + 1]))
+            }
+            return set
+        }
+
+        func isSimilar(_ a: String, _ b: String) -> Bool {
+            let na = normalized(a)
+            let nb = normalized(b)
+            if na.isEmpty || nb.isEmpty { return false }
+            if na == nb { return true }
+            if na.count >= 4, nb.count >= 4, (na.contains(nb) || nb.contains(na)) { return true }
+            let ba = bigrams(na)
+            let bb = bigrams(nb)
+            guard !ba.isEmpty, !bb.isEmpty else { return false }
+            let inter = ba.intersection(bb).count
+            let union = ba.union(bb).count
+            let j = Double(inter) / Double(max(1, union))
+            return j >= 0.55
+        }
+
+        func isSimilarToAny(_ title: String, _ others: [String]) -> Bool {
+            others.contains { isSimilar(title, $0) }
+        }
+
+        let recentTitles = shuffleHistory.flatMap { $0 }
+
+        if useAI {
+            let apiKey = openAIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !apiKey.isEmpty {
+                do {
+                    let total = max(1, board.cells.count)
+                    let done = board.cells.filter { $0.isDone }.count
+                    let completionRate = Double(done) / Double(total)
+                    let completedLines = board.rewardedLineIds.count
+                    let completedFullBoards = board.completedFullBoards
+
+                    let aiTasks = try await OpenAIClient(apiKey: apiKey, model: openAIModel)
+                        .generateTasks(
+                            habit: goals.joined(separator: "、"),
+                            motivation: motivation,
+                            size: board.size,
+                            completionRate: completionRate,
+                            completedLines: completedLines,
+                            completedFullBoards: completedFullBoards
+                        )
+
+                    // Filter blocked / vague / duplicates / similar-to-last-3-shuffles
+                    let filtered = aiTasks
+                        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                        .filter { !$0.isEmpty }
+                        .filter { task in
+                            guard !usedTitles.contains(task) else { return false }
+                            let isBlockedTopic = blockedTopics.contains { topic in
+                                let tt = topic.trimmingCharacters(in: .whitespacesAndNewlines)
+                                return !tt.isEmpty && task.contains(tt)
+                            }
+                            guard !isBlockedTopic else { return false }
+                            if task.contains("再做一次") || task.contains("放在一起") || task.contains("目標物件") || task.contains("打開手機") || task.contains("開始第一個動作") || task.contains("放在顯眼位置") {
+                                return false
+                            }
+                            // Similarity check against last 3 shuffles
+                            if recentTitles.contains(where: { isSimilar(task, $0) }) {
+                                return false
+                            }
+                            return true
+                        }
+
+                    var seen = Set<String>()
+                    for t in filtered {
+                        if seen.contains(t) { continue }
+                        seen.insert(t)
+                        habitCandidates.append(BingoCell(id: UUID(), title: t, isDone: false, goal: "__AI_HABIT__", habitStepId: nil))
+                    }
+                } catch {
+                    await MainActor.run {
+                        self.aiErrorMessage = "AI 生成失敗：\(error.localizedDescription)"
+                    }
+                }
+            }
+        }
+
+        // Build non-habit (support) candidates from local habit maps.
+        // NOTE: buildCandidateCells includes the support goal (its goal is nil), so we can reuse it.
+        let mixed = buildCandidateCells(excludingTitles: usedTitles)
+
+        // Support candidates (goal == nil) should also avoid similarity to last 3 shuffles.
+        supportCandidates = mixed
+            .filter { $0.goal == nil }
+            .filter { !isSimilarToAny($0.title, recentTitles) }
+
+        // If we didn't get enough habit candidates from AI, fall back to local habit candidates.
+        if habitCandidates.isEmpty {
+            habitCandidates = mixed
+                .filter { $0.goal != nil }
+                .filter { !isSimilarToAny($0.title, recentTitles) }
+        }
+
+        func popCandidateMatching(
+            _ candidates: inout [BingoCell],
+            existingTitles: [String],
+            predicate: (BingoCell) -> Bool
+        ) -> BingoCell? {
+            var index = 0
+            while index < candidates.count {
+                let c = candidates[index]
+                if isSimilarToAny(c.title, existingTitles) || !predicate(c) {
+                    index += 1
+                    continue
+                }
+                candidates.remove(at: index)
+                return c
+            }
+            return nil
+        }
+
+        var habitRelatedCount = board.cells.filter { $0.goal != nil }.count
 
         for idx in replaceIndices {
-            guard let next = popCandidate(&candidates, excludingTitles: Set(board.cells.map { $0.title })) else {
-                board.cells[idx] = BingoCell(id: UUID(), title: "休息一下", isDone: false)
+            let existingTitles = board.cells
+                .map { $0.title.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+
+            // Rule: at most 4 habit-related tasks (goal != nil)
+            let wantHabit = habitRelatedCount < 4
+            if wantHabit, let next = popCandidateMatching(&habitCandidates, existingTitles: existingTitles, predicate: { $0.goal != nil }) {
+                board.cells[idx] = next
+                habitRelatedCount += 1
+                taskPool.append(next)
                 continue
             }
-            board.cells[idx] = next
-            taskPool.append(next)
+
+            if let next = popCandidateMatching(&supportCandidates, existingTitles: existingTitles, predicate: { $0.goal == nil }) {
+                board.cells[idx] = next
+                taskPool.append(next)
+                continue
+            }
+
+            // Last resort
+            board.cells[idx] = fallbackRestCell(existingTitles: existingTitles, recentTitles: recentTitles, isSimilar: isSimilar)
+        }
+
+        // Record shuffle history (last 3 boards) only for AI-driven refresh
+        if useAI {
+            let titles = board.cells.map { $0.title.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+            if !titles.isEmpty {
+                shuffleHistory.append(titles)
+                if shuffleHistory.count > 3 {
+                    shuffleHistory = Array(shuffleHistory.suffix(3))
+                }
+            }
         }
 
         save()
+    }
+
+    private func fallbackRestCell(
+        existingTitles: [String],
+        recentTitles: [String],
+        isSimilar: (String, String) -> Bool
+    ) -> BingoCell {
+        // A pool of distinct, concrete micro-rest / support tasks.
+        // Must avoid similarity with current board + last 3 shuffles.
+        let pool: [String] = [
+            "喝一口水",
+            "伸展 30 秒",
+            "看窗外 30 秒",
+            "深呼吸 3 次",
+            "走動 1 分鐘",
+            "整理桌面 30 秒",
+            "洗手並擦乾",
+            "把手機放遠 5 分鐘",
+            "聽一段音樂 1 分鐘",
+            "寫下現在的感受（3 個字）",
+            "回想昨天一步（1 句）"
+        ]
+
+        func ok(_ t: String) -> Bool {
+            let all = existingTitles + recentTitles
+            return !all.contains(where: { isSimilar(t, $0) })
+        }
+
+        if let title = pool.first(where: ok) {
+            return BingoCell(id: UUID(), title: title, isDone: false)
+        }
+
+        // Absolute last resort: still keep it explicit and unique-ish.
+        return BingoCell(id: UUID(), title: "喝水 10 秒", isDone: false)
     }
 
     private func buildCandidateCells(excludingTitles: Set<String>) -> [BingoCell] {
@@ -506,12 +705,52 @@ final class AppState: ObservableObject {
             return false
         }
 
+        func isTooVagueTask(_ text: String) -> Bool {
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return true }
+
+            // Hard blacklist for non-actionable / ambiguous placeholders
+            let banned: [String] = [
+                "再做一次",
+                "放在一起",
+                "走向目標物件",
+                "目標物件",
+                "嘗試看看",
+                "完成它",
+                "開始第一個動作",
+                "打開手機",
+                "看現在幾點",
+                "確認開啟",
+                "回想做了什麼",
+                "感受進步",
+                "放在顯眼位置",
+                "形成習慣",
+                "自然融入生活",
+                "做有挑戰的",
+                "想一個新方法",
+                "想一個新做法"
+            ]
+            if banned.contains(where: { trimmed == $0 || trimmed.contains($0) }) {
+                return true
+            }
+
+            // Too short usually becomes vague in Chinese UI
+            if trimmed.count <= 3 { return true }
+
+            // Guard against time selection without specifying what for
+            if trimmed.contains("選定明天") && trimmed.contains("時間") && !trimmed.contains("例如") {
+                return true
+            }
+
+            return false
+        }
+
         let goalOrder = goals + [supportGoalKey]
         for goal in goalOrder {
             guard let guide = habitGuides[goal] else { continue }
             let steps = allowedSteps(for: goal, guide: guide)
             for step in steps {
-                let options = step.bingoTasks.filter { !isBlocked($0) }
+                let options = step.bingoTasks.filter { !isBlocked($0) && !isTooVagueTask($0) }
                 guard let title = options.first(where: { !excludingTitles.contains($0) }) ?? options.randomElement() else { continue }
                 let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !cleanTitle.isEmpty else { continue }
@@ -564,9 +803,9 @@ final class AppState: ObservableObject {
         coins += earned
         totalCoinsEarned += earned
 
-        // Mark Habit Map step complete.
-        if let goal = cell.goal, let stepId = cell.habitStepId {
-            markStepCompleted(goal: goal, stepId: stepId)
+        // Progress Habit Map step completion based on required bingo count.
+        if let goal = cell.goal, let stepUUID = cell.habitStepId {
+            incrementStepProgress(goal: goal, stepUUID: stepUUID)
         }
 
         // Bingo progress + rewards
@@ -592,17 +831,31 @@ final class AppState: ObservableObject {
         save()
     }
 
-    private func markStepCompleted(goal: String, stepId: UUID) {
+    private func incrementStepProgress(goal: String, stepUUID: UUID) {
         guard var guide = habitGuides[goal] else { return }
+        var didChange = false
+
         for stageIndex in guide.stages.indices {
             for stepIndex in guide.stages[stageIndex].steps.indices {
-                if guide.stages[stageIndex].steps[stepIndex].id == stepId {
-                    guide.stages[stageIndex].steps[stepIndex].isCompleted = true
+                if guide.stages[stageIndex].steps[stepIndex].id == stepUUID {
+                    var step = guide.stages[stageIndex].steps[stepIndex]
+                    if step.isCompleted { continue }
+
+                    step.completedBingoCount += 1
+                    if step.completedBingoCount >= step.requiredBingoCount {
+                        step.isCompleted = true
+                    }
+                    guide.stages[stageIndex].steps[stepIndex] = step
+                    didChange = true
                 }
             }
         }
-        guide.updatedAt = Date()
-        habitGuides[goal] = guide
+
+        if didChange {
+            guide.updatedAt = Date()
+            habitGuides[goal] = guide
+            save()
+        }
     }
 
     func useSkip(on cell: BingoCell) {
@@ -625,7 +878,15 @@ final class AppState: ObservableObject {
             }
             taskPool.append(board.cells[idx])
         } else {
-            board.cells[idx] = BingoCell(id: UUID(), title: "休息一下", isDone: false)
+            let existingTitles = board.cells
+                .map { $0.title.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            let recentTitles: [String] = shuffleHistory.flatMap { $0 }
+            board.cells[idx] = fallbackRestCell(existingTitles: existingTitles, recentTitles: recentTitles, isSimilar: { a, b in
+                let na = a.lowercased().replacingOccurrences(of: " ", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
+                let nb = b.lowercased().replacingOccurrences(of: " ", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
+                return na == nb || (!na.isEmpty && !nb.isEmpty && (na.contains(nb) || nb.contains(na)))
+            })
         }
 
         save()
@@ -811,7 +1072,7 @@ final class AppState: ObservableObject {
                         let task = exerciseSteps[idx]
                         let prefix = ["S","P","L","B","R"][stageIndex]
                         let sid = "\(prefix)\(i+1)"
-                        builtSteps.append(HabitGuideStep(id: UUID(), stepId: sid, title: task.title, duration: i < 2 ? "30 秒" : (i < 4 ? "1-3 分鐘" : "3-5 分鐘"), fallback: i == 0 ? "只選定時間，不設鬧鐘" : (i == 1 ? "只把衣服拿出來" : "只做 30 秒"), category: stages[stageIndex].name, isCompleted: false, bingoTasks: task.bingoTasks))
+                        builtSteps.append(HabitGuideStep(id: UUID(), stepId: sid, title: task.title, duration: i < 2 ? "30 秒" : (i < 4 ? "1-3 分鐘" : "3-5 分鐘"), fallback: i == 0 ? "只選定時間，不設鬧鐘" : (i == 1 ? "只把衣服拿出來" : "只做 30 秒"), category: stages[stageIndex].name, requiredBingoCount: 1, completedBingoCount: 0, isCompleted: false, bingoTasks: task.bingoTasks))
                     }
                 }
                 stageGuides.append(HabitStageGuide(stage: stageIndex, steps: builtSteps))
@@ -849,7 +1110,7 @@ final class AppState: ObservableObject {
                         let task = sleepSteps[idx]
                         let prefix = ["S","P","L","B","R"][stageIndex]
                         let sid = "\(prefix)\(i+1)"
-                        builtSteps.append(HabitGuideStep(id: UUID(), stepId: sid, title: task.title, duration: i < 2 ? "1 分鐘" : (i < 4 ? "3-5 分鐘" : "5-10 分鐘"), fallback: i == 0 ? "只寫下時間，不設鬧鐘" : (i == 1 ? "只把鬧鐘設好" : "只躺上床"), category: stages[stageIndex].name, isCompleted: false, bingoTasks: task.bingoTasks))
+                        builtSteps.append(HabitGuideStep(id: UUID(), stepId: sid, title: task.title, duration: i < 2 ? "1 分鐘" : (i < 4 ? "3-5 分鐘" : "5-10 分鐘"), fallback: i == 0 ? "只寫下時間，不設鬧鐘" : (i == 1 ? "只把鬧鐘設好" : "只躺上床"), category: stages[stageIndex].name, requiredBingoCount: 1, completedBingoCount: 0, isCompleted: false, bingoTasks: task.bingoTasks))
                     }
                 }
                 stageGuides.append(HabitStageGuide(stage: stageIndex, steps: builtSteps))
@@ -883,7 +1144,7 @@ final class AppState: ObservableObject {
                         let task = waterSteps[idx]
                         let prefix = ["S","P","L","B","R"][stageIndex]
                         let sid = "\(prefix)\(i+1)"
-                        builtSteps.append(HabitGuideStep(id: UUID(), stepId: sid, title: task.title, duration: "30 秒", fallback: i == 0 ? "只把水壺拿出來" : "只喝一口水", category: stages[stageIndex].name, isCompleted: false, bingoTasks: task.bingoTasks))
+                        builtSteps.append(HabitGuideStep(id: UUID(), stepId: sid, title: task.title, duration: "30 秒", fallback: i == 0 ? "只把水壺拿出來" : "只喝一口水", category: stages[stageIndex].name, requiredBingoCount: 1, completedBingoCount: 0, isCompleted: false, bingoTasks: task.bingoTasks))
                     }
                 }
                 stageGuides.append(HabitStageGuide(stage: stageIndex, steps: builtSteps))
@@ -892,12 +1153,12 @@ final class AppState: ObservableObject {
         // Generic fallback
         else {
             let genericSteps: [(title: String, bingoTasks: [String])] = [
-                ("選定明日執行時間", ["看現在幾點", "選定明天一個時間", "寫下來"]),
-                ("準備好所需工具", ["找出需要的東西", "放在一起", "放在顯眼位置"]),
-                ("設提醒", ["打開手機", "設鬧鐘", "確認開啟"]),
-                ("做第一個小行動", ["站起來", "走向目標物件", "開始第一個動作"]),
-                ("記錄今天完成", ["回想做了什麼", "寫下一句話", "給自己肯定"]),
-                ("重複昨天的行動", ["回想昨天步驟", "再做一次", "感受進步"]),
+                ("選定明日執行時間", ["打開手機日曆", "選定明天 1 個具體時間（例如 19:00）", "把事件命名為「\(goal)」"]),
+                ("準備好所需工具", ["想一下要做 \(goal) 需要什麼", "把其中 1 樣放到桌面上（看得見）", "把其餘先放在同一個位置"]),
+                ("設提醒", ["打開手機鬧鐘", "設定明天提醒（寫上 \(goal)）", "確認提醒已開啟"]),
+                ("做第一個小行動", ["站起來", "走到要開始 \(goal) 的物件旁（例如書/水杯/鞋）", "做 30 秒的最小動作"]),
+                ("記錄今天完成", ["回想剛剛做了什麼", "寫下 1 句具體紀錄", "對自己說「我有開始」"]),
+                ("重複昨天的行動", ["回想昨天做的最小步驟", "重做同一個最小步驟（30 秒）", "結束後喝一口水"]),
                 ("加一點點量", ["比昨天多做一點", "完成它", "稱讚自己"]),
                 ("換個方式做", ["想一個新方法", "嘗試看看", "記錄效果"]),
                 ("記錄這一刻", ["花 30 秒記錄", "看看昨天記錄", "給自己肯定"]),
@@ -922,7 +1183,7 @@ final class AppState: ObservableObject {
                         let task = genericSteps[idx]
                         let prefix = ["S","P","L","B","R"][stageIndex]
                         let sid = "\(prefix)\(i+1)"
-                        builtSteps.append(HabitGuideStep(id: UUID(), stepId: sid, title: task.title, duration: i < 2 ? "30 秒" : (i < 4 ? "1 分鐘" : "2 分鐘"), fallback: "只做 15 秒", category: stages[stageIndex].name, isCompleted: false, bingoTasks: task.bingoTasks))
+                        builtSteps.append(HabitGuideStep(id: UUID(), stepId: sid, title: task.title, duration: i < 2 ? "30 秒" : (i < 4 ? "1 分鐘" : "2 分鐘"), fallback: "只做 15 秒", category: stages[stageIndex].name, requiredBingoCount: 1, completedBingoCount: 0, isCompleted: false, bingoTasks: task.bingoTasks))
                     }
                 }
                 stageGuides.append(HabitStageGuide(stage: stageIndex, steps: builtSteps))

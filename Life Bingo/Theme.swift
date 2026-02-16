@@ -195,6 +195,7 @@ struct Card<Content: View>: View {
 
     var body: some View {
         content
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(16)
             .background(Theme.surface)
             .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
