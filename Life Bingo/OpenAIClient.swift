@@ -478,7 +478,11 @@ struct OpenAIClient {
         {
           "masteryDefinition": "具體可觀察的熟練狀態（不要 KPI）",
           "frictions": ["具體阻力1", "具體阻力2", "具體阻力3"],
-          "methodRoute": ["列點式順序方法 10-20 點（每點=可操作行為）"],
+          "methodRoute": [
+            "漸進策略：用 3–6 句描述從最小版本 → 目標行為的漸進路線（可操作行為）",
+            "替代方案：列出太累/雨天/時間少時的低配版本（可操作行為）",
+            "中斷後回復：錯過一次後，下一次如何回到最小版本（可操作行為；不追 KPI）"
+          ],
           "stages": [
             {
               "stage": 0,
@@ -501,14 +505,18 @@ struct OpenAIClient {
         【第一：研究分析（必須先做，然後才寫 steps）】
         你要先想清楚「用戶為何做不到」以及「點樣先會養成」，並把分析落地成可執行策略：
         - frictions：至少 3 點，且每點要具體（要有情境/原因，例如「下班太累」「換衫麻煩」「落雨冇地方」），禁止只寫「沒時間/沒動力」呢種泛句。
-        - methodRoute：至少 3 點，但建議 8–20 點；每點必須是「可操作行為」，而且整體路線必須覆蓋：
-          1) 替代方案（例如：雨天/太累/時間碎片化時的低配版本）
-          2) 中斷後回復（例如：錯過一次後的回歸最小版本）
-          3) 漸進策略（如何從零→可重複→能抗干擾→能自我修復）
-          4) 觸發情境（例如：起床後/晚飯後/返到屋企）建議提供，但不是必填（有些人不想被固定 cue 綁死）
+        - methodRoute：至少 3 點（可多）；每點必須是「可操作行為」。**為了避免漏項，請用固定標籤格式**，並且至少各出現一次：
+          - 「漸進策略：...」
+          - 「替代方案：...」（太累/雨天/時間少時的低配版本）
+          - 「中斷後回復：...」（錯過後如何回到最小版本；不追 KPI）
+          - 「觸發情境：...」可寫可不寫（建議但不必填）
 
         【硬性輸出驗證（你必須滿足）】
-        - methodRoute 至少 3 點（越完整越好），且每點是可操作行為（禁止抽象口號），並且必須包含「替代方案/中斷後回復」的內容（觸發情境建議提供，但不是必填）。
+        - methodRoute 至少 3 點（越完整越好），且每點是可操作行為（禁止抽象口號）。為避免漏寫，methodRoute 內必須至少各有一點以以下字首開頭：
+          - 漸進策略：
+          - 替代方案：
+          - 中斷後回復：
+          （觸發情境：可選）
         - stages 必須剛好 5 個（stage=0..4），每個 stage 至少 1 個 steps（可彈性）。
         - 每個 step 必須有 stepId，且 stepId 必須跟 stage 對應：
           - stage 0: S1..Sn
@@ -756,8 +764,8 @@ struct OpenAIClient {
         }
         // Triggers are helpful but shouldn't be mandatory (some users don't want a fixed cue).
         let hasTriggerDesign = containsAny(["觸發", "時機", "之後", "起床", "晚飯", "下班", "after", "when"])
-        let hasVariants = containsAny(["替代", "如果", "或", "雨", "太累", "室內", "戶外", "instead", "otherwise", "variant"])
-        let hasRecovery = containsAny(["中斷", "恢復", "回歸", "重新開始", "回來", "recover", "resume", "restart"])
+        let hasVariants = containsAny(["替代方案", "替代", "如果", "或", "雨", "太累", "室內", "戶外", "instead", "otherwise", "variant"])
+        let hasRecovery = containsAny(["中斷後回復", "中斷", "恢復", "回歸", "重新開始", "回來", "recover", "resume", "restart"])
 
         if !hasVariants {
             throw OpenAIError.parse("methodRoute 必須包含：替代方案（太累/雨天/時間少時的低配版本）")
