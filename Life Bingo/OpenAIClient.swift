@@ -657,11 +657,30 @@ struct OpenAIClient {
                     let trimmedDuration = step.duration.trimmingCharacters(in: .whitespacesAndNewlines)
                     let trimmedCategory = (step.category ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
 
-                    let tasks = (step.bingoTasks ?? [])
-                        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    let tasks = (step.bingoTasks?.tasks ?? [])
+                        .map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }
                         .filter { !$0.isEmpty }
 
                     let required = max(1, min(3, step.requiredBingoCount ?? 1))
+                    let bingoTaskObjs: [BingoTask] = {
+                        if let field = step.bingoTasks {
+                            return field.tasks.enumerated().map { idx, t in
+                                let taskId = (t.taskId ?? "\(trimmedStepId)-T\(idx + 1)").trimmingCharacters(in: .whitespacesAndNewlines)
+                                let mapsTo = (t.mapsToStep ?? trimmedStepId).trimmingCharacters(in: .whitespacesAndNewlines)
+                                let derived = (t.derivedFromInterventionIds ?? []).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+                                let text = t.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                                let durationSec = max(1, t.durationSec ?? 45)
+                                let observable = (t.observable ?? "完成：\(text)").trimmingCharacters(in: .whitespacesAndNewlines)
+                                let sp = min(0.99, max(0.01, t.successProbability ?? 0.75))
+                                return BingoTask(taskId: taskId, mapsToStep: mapsTo, derivedFromInterventionIds: derived, text: text, durationSec: durationSec, observable: observable, successProbability: sp)
+                            }
+                        }
+                        // Should not happen due to validation, but keep safe default.
+                        return tasks.enumerated().map { idx, text in
+                            BingoTask(taskId: "\(trimmedStepId)-T\(idx + 1)", mapsToStep: trimmedStepId, text: text, durationSec: 45, observable: "完成：\(text)", successProbability: 0.75)
+                        }
+                    }()
+
                     return HabitGuideStep(
                         id: UUID(),
                         stepId: trimmedStepId,
@@ -672,7 +691,7 @@ struct OpenAIClient {
                         requiredBingoCount: required,
                         completedBingoCount: 0,
                         isCompleted: false,
-                        bingoTasks: tasks
+                        bingoTasks: bingoTaskObjs
                     )
                 }
                 return HabitStageGuide(stage: stage.stage, steps: steps)
@@ -793,12 +812,12 @@ struct OpenAIClient {
 
                 if s.stage == 4 {
                     stage4CombinedText += "\n" + title + " " + duration + " " + fallback
-                    if let tasks = step.bingoTasks {
-                        stage4CombinedText += " " + tasks.joined(separator: " ")
+                    if let tasks = step.bingoTasks?.tasks {
+                        stage4CombinedText += " " + tasks.map { $0.text }.joined(separator: " ")
                     }
                 }
 
-                let tasks = (step.bingoTasks ?? []).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+                let tasks = (step.bingoTasks?.tasks ?? []).map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
                 if tasks.isEmpty {
                     throw OpenAIError.parse("step \(sidRaw) bingoTasks 至少 1 個")
                 }
@@ -831,8 +850,8 @@ struct OpenAIClient {
         for stage in stages {
             for step in stage.steps {
                 var chunk = step.title + " " + step.fallback
-                if let tasks = step.bingoTasks {
-                    chunk += " " + tasks.joined(separator: " ")
+                if let tasks = step.bingoTasks?.tasks {
+                    chunk += " " + tasks.map { $0.text }.joined(separator: " ")
                 }
                 allChunks.append(chunk)
             }
@@ -859,6 +878,45 @@ struct HabitGuideStageResponse: Codable {
     var steps: [HabitGuideStepResponse]
 }
 
+struct BingoTaskResponse: Codable {
+    var taskId: String?
+    var mapsToStep: String?
+    var derivedFromInterventionIds: [String]?
+    var text: String
+    var durationSec: Int?
+    var observable: String?
+    var successProbability: Double?
+}
+
+struct BingoTasksField: Codable {
+    var tasks: [BingoTaskResponse]
+
+    init(tasks: [BingoTaskResponse]) {
+        self.tasks = tasks
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let objTasks = try? container.decode([BingoTaskResponse].self) {
+            self.tasks = objTasks
+            return
+        }
+        // Backward compatibility: allow [String]
+        let legacy = (try? container.decode([String].self)) ?? []
+        self.tasks = legacy.enumerated().map { idx, t in
+            BingoTaskResponse(
+                taskId: nil,
+                mapsToStep: nil,
+                derivedFromInterventionIds: nil,
+                text: t,
+                durationSec: nil,
+                observable: nil,
+                successProbability: nil
+            )
+        }
+    }
+}
+
 struct HabitGuideStepResponse: Codable {
     var stepId: String?
     var title: String
@@ -866,7 +924,7 @@ struct HabitGuideStepResponse: Codable {
     var fallback: String
     var category: String?
     var requiredBingoCount: Int?
-    var bingoTasks: [String]?
+    var bingoTasks: BingoTasksField?
 }
 
 struct OpenAIResponse: Decodable {

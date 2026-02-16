@@ -750,7 +750,7 @@ final class AppState: ObservableObject {
             guard let guide = habitGuides[goal] else { continue }
             let steps = allowedSteps(for: goal, guide: guide)
             for step in steps {
-                let options = step.bingoTasks.filter { !isBlocked($0) && !isTooVagueTask($0) }
+                let options = step.bingoTasks.map { $0.text }.filter { !isBlocked($0) && !isTooVagueTask($0) }
                 guard let title = options.first(where: { !excludingTitles.contains($0) }) ?? options.randomElement() else { continue }
                 let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !cleanTitle.isEmpty else { continue }
@@ -1072,7 +1072,10 @@ final class AppState: ObservableObject {
                         let task = exerciseSteps[idx]
                         let prefix = ["S","P","L","B","R"][stageIndex]
                         let sid = "\(prefix)\(i+1)"
-                        builtSteps.append(HabitGuideStep(id: UUID(), stepId: sid, title: task.title, duration: i < 2 ? "30 秒" : (i < 4 ? "1-3 分鐘" : "3-5 分鐘"), fallback: i == 0 ? "只選定時間，不設鬧鐘" : (i == 1 ? "只把衣服拿出來" : "只做 30 秒"), category: stages[stageIndex].name, requiredBingoCount: 1, completedBingoCount: 0, isCompleted: false, bingoTasks: task.bingoTasks))
+                        let tasks = task.bingoTasks.enumerated().map { j, t in
+                            BingoTask(taskId: "\(sid)-T\(j + 1)", mapsToStep: sid, text: t, durationSec: 45, observable: "完成：\(t)", successProbability: 0.75)
+                        }
+                        builtSteps.append(HabitGuideStep(id: UUID(), stepId: sid, title: task.title, duration: i < 2 ? "30 秒" : (i < 4 ? "1-3 分鐘" : "3-5 分鐘"), fallback: i == 0 ? "只選定時間，不設鬧鐘" : (i == 1 ? "只把衣服拿出來" : "只做 30 秒"), category: stages[stageIndex].name, requiredBingoCount: 1, completedBingoCount: 0, isCompleted: false, bingoTasks: tasks))
                     }
                 }
                 stageGuides.append(HabitStageGuide(stage: stageIndex, steps: builtSteps))
@@ -1110,7 +1113,10 @@ final class AppState: ObservableObject {
                         let task = sleepSteps[idx]
                         let prefix = ["S","P","L","B","R"][stageIndex]
                         let sid = "\(prefix)\(i+1)"
-                        builtSteps.append(HabitGuideStep(id: UUID(), stepId: sid, title: task.title, duration: i < 2 ? "1 分鐘" : (i < 4 ? "3-5 分鐘" : "5-10 分鐘"), fallback: i == 0 ? "只寫下時間，不設鬧鐘" : (i == 1 ? "只把鬧鐘設好" : "只躺上床"), category: stages[stageIndex].name, requiredBingoCount: 1, completedBingoCount: 0, isCompleted: false, bingoTasks: task.bingoTasks))
+                        let tasks = task.bingoTasks.enumerated().map { j, t in
+                            BingoTask(taskId: "\(sid)-T\(j + 1)", mapsToStep: sid, text: t, durationSec: 45, observable: "完成：\(t)", successProbability: 0.75)
+                        }
+                        builtSteps.append(HabitGuideStep(id: UUID(), stepId: sid, title: task.title, duration: i < 2 ? "1 分鐘" : (i < 4 ? "3-5 分鐘" : "5-10 分鐘"), fallback: i == 0 ? "只寫下時間，不設鬧鐘" : (i == 1 ? "只把鬧鐘設好" : "只躺上床"), category: stages[stageIndex].name, requiredBingoCount: 1, completedBingoCount: 0, isCompleted: false, bingoTasks: tasks))
                     }
                 }
                 stageGuides.append(HabitStageGuide(stage: stageIndex, steps: builtSteps))
@@ -1144,7 +1150,10 @@ final class AppState: ObservableObject {
                         let task = waterSteps[idx]
                         let prefix = ["S","P","L","B","R"][stageIndex]
                         let sid = "\(prefix)\(i+1)"
-                        builtSteps.append(HabitGuideStep(id: UUID(), stepId: sid, title: task.title, duration: "30 秒", fallback: i == 0 ? "只把水壺拿出來" : "只喝一口水", category: stages[stageIndex].name, requiredBingoCount: 1, completedBingoCount: 0, isCompleted: false, bingoTasks: task.bingoTasks))
+                        let tasks = task.bingoTasks.enumerated().map { j, t in
+                            BingoTask(taskId: "\(sid)-T\(j + 1)", mapsToStep: sid, text: t, durationSec: 45, observable: "完成：\(t)", successProbability: 0.75)
+                        }
+                        builtSteps.append(HabitGuideStep(id: UUID(), stepId: sid, title: task.title, duration: "30 秒", fallback: i == 0 ? "只把水壺拿出來" : "只喝一口水", category: stages[stageIndex].name, requiredBingoCount: 1, completedBingoCount: 0, isCompleted: false, bingoTasks: tasks))
                     }
                 }
                 stageGuides.append(HabitStageGuide(stage: stageIndex, steps: builtSteps))
@@ -1183,7 +1192,10 @@ final class AppState: ObservableObject {
                         let task = genericSteps[idx]
                         let prefix = ["S","P","L","B","R"][stageIndex]
                         let sid = "\(prefix)\(i+1)"
-                        builtSteps.append(HabitGuideStep(id: UUID(), stepId: sid, title: task.title, duration: i < 2 ? "30 秒" : (i < 4 ? "1 分鐘" : "2 分鐘"), fallback: "只做 15 秒", category: stages[stageIndex].name, requiredBingoCount: 1, completedBingoCount: 0, isCompleted: false, bingoTasks: task.bingoTasks))
+                        let tasks = task.bingoTasks.enumerated().map { j, t in
+                            BingoTask(taskId: "\(sid)-T\(j + 1)", mapsToStep: sid, text: t, durationSec: 45, observable: "完成：\(t)", successProbability: 0.75)
+                        }
+                        builtSteps.append(HabitGuideStep(id: UUID(), stepId: sid, title: task.title, duration: i < 2 ? "30 秒" : (i < 4 ? "1 分鐘" : "2 分鐘"), fallback: "只做 15 秒", category: stages[stageIndex].name, requiredBingoCount: 1, completedBingoCount: 0, isCompleted: false, bingoTasks: tasks))
                     }
                 }
                 stageGuides.append(HabitStageGuide(stage: stageIndex, steps: builtSteps))

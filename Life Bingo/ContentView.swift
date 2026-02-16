@@ -1578,8 +1578,8 @@ struct HabitGuideStepItem: View {
                         Text("Bingo 任務")
                             .font(Theme.Fonts.caption(11))
                             .foregroundStyle(Theme.textSecondary)
-                        ForEach(Array(step.bingoTasks.prefix(5)), id: \.self) { task in
-                            Text("• \(task)")
+                        ForEach(Array(step.bingoTasks.prefix(5)), id: \.taskId) { task in
+                            Text("• \(task.text)")
                                 .font(Theme.Fonts.caption())
                                 .foregroundStyle(Theme.textSecondary)
                                 .lineLimit(nil)
