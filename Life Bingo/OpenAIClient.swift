@@ -502,13 +502,13 @@ struct OpenAIClient {
         你要先想清楚「用戶為何做不到」以及「點樣先會養成」，並把分析落地成可執行策略：
         - frictions：至少 3 點，且每點要具體（要有情境/原因，例如「下班太累」「換衫麻煩」「落雨冇地方」），禁止只寫「沒時間/沒動力」呢種泛句。
         - methodRoute：至少 3 點，但建議 8–20 點；每點必須是「可操作行為」，而且整體路線必須覆蓋：
-          1) 觸發情境（例如：起床後/晚飯後/返到屋企）
-          2) 替代方案（例如：雨天/太累/時間碎片化時的低配版本）
-          3) 中斷後回復（例如：錯過一次後的回歸最小版本）
-          4) 漸進策略（如何從零→可重複→能抗干擾→能自我修復）
+          1) 替代方案（例如：雨天/太累/時間碎片化時的低配版本）
+          2) 中斷後回復（例如：錯過一次後的回歸最小版本）
+          3) 漸進策略（如何從零→可重複→能抗干擾→能自我修復）
+          4) 觸發情境（例如：起床後/晚飯後/返到屋企）建議提供，但不是必填（有些人不想被固定 cue 綁死）
 
         【硬性輸出驗證（你必須滿足）】
-        - methodRoute 至少 3 點（越完整越好），且每點是可操作行為（禁止抽象口號），並且必須包含「觸發情境/替代方案/中斷後回復」的內容。
+        - methodRoute 至少 3 點（越完整越好），且每點是可操作行為（禁止抽象口號），並且必須包含「替代方案/中斷後回復」的內容（觸發情境建議提供，但不是必填）。
         - stages 必須剛好 5 個（stage=0..4），每個 stage 至少 1 個 steps（可彈性）。
         - 每個 step 必須有 stepId，且 stepId 必須跟 stage 對應：
           - stage 0: S1..Sn
@@ -754,18 +754,20 @@ struct OpenAIClient {
         func containsAny(_ keywords: [String]) -> Bool {
             keywords.contains { routeText.localizedCaseInsensitiveContains($0) }
         }
+        // Triggers are helpful but shouldn't be mandatory (some users don't want a fixed cue).
         let hasTriggerDesign = containsAny(["觸發", "時機", "之後", "起床", "晚飯", "下班", "after", "when"])
         let hasVariants = containsAny(["替代", "如果", "或", "雨", "太累", "室內", "戶外", "instead", "otherwise", "variant"])
         let hasRecovery = containsAny(["中斷", "恢復", "回歸", "重新開始", "回來", "recover", "resume", "restart"])
-        if !hasTriggerDesign {
-            throw OpenAIError.parse("methodRoute 必須包含：觸發情境（何時做/什麼時機）")
-        }
+
         if !hasVariants {
             throw OpenAIError.parse("methodRoute 必須包含：替代方案（太累/雨天/時間少時的低配版本）")
         }
         if !hasRecovery {
             throw OpenAIError.parse("methodRoute 必須包含：中斷後回復（錯過後如何回歸最小版本）")
         }
+
+        // If trigger design is missing, we allow it, but we can still nudge via prompt later.
+        _ = hasTriggerDesign
 
         // Encourage frictions to be concrete (avoid overly generic one-liners).
         let genericFrictionPhrases = ["沒時間", "時間不足", "缺乏時間", "沒動力", "缺乏動力", "懶"]
