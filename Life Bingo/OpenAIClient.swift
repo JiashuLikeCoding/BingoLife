@@ -548,20 +548,74 @@ struct OpenAIClient {
             throw OpenAIError.server(message)
         }
 
-        let text: String
+        // Extract output text robustly from multiple possible OpenAI response shapes.
+        var text: String
         do {
+            // 1) Preferred: decode using our typed shape.
             let decoded = try JSONDecoder().decode(OpenAIResponse.self, from: data)
             if let error = decoded.error {
                 throw OpenAIError.server(error.message)
             }
             text = decoded.outputText.trimmingCharacters(in: .whitespacesAndNewlines)
         } catch {
-            // Fallback: API response format may vary; attempt to recover by treating it as raw text.
+            // 2) Fallback: parse as generic JSON (responses/chat.completions variants).
             let raw = String(data: data, encoding: .utf8) ?? ""
-            // If the raw payload itself is JSON for our target schema, try to extract the first JSON object.
-            if let start = raw.firstIndex(of: "{"), let end = raw.lastIndex(of: "}") , start < end {
-                text = String(raw[start...end]).trimmingCharacters(in: .whitespacesAndNewlines)
+
+            // If API returned an error payload, surface it.
+            if let obj = try? JSONSerialization.jsonObject(with: data, options: []),
+               let dict = obj as? [String: Any],
+               let err = dict["error"] as? [String: Any],
+               let msg = err["message"] as? String {
+                throw OpenAIError.server(msg)
+            }
+
+            // Try to extract output_text from Responses API: { output: [ { content: [ { type, text } ] } ] }
+            if let obj = try? JSONSerialization.jsonObject(with: data, options: []),
+               let dict = obj as? [String: Any] {
+                if let outputText = dict["output_text"] as? String {
+                    text = outputText.trimmingCharacters(in: .whitespacesAndNewlines)
+                } else if let output = dict["output"] as? [[String: Any]] {
+                    var chunks: [String] = []
+                    for item in output {
+                        if let content = item["content"] as? [[String: Any]] {
+                            for c in content {
+                                let type = (c["type"] as? String) ?? ""
+                                if type == "output_text" || type == "text" {
+                                    if let t = c["text"] as? String { chunks.append(t) }
+                                }
+                            }
+                        }
+                    }
+                    text = chunks.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+                } else if let choices = dict["choices"] as? [[String: Any]] {
+                    // Chat Completions style
+                    let first = choices.first
+                    if let message = first?["message"] as? [String: Any],
+                       let content = message["content"] as? String {
+                        text = content.trimmingCharacters(in: .whitespacesAndNewlines)
+                    } else if let delta = first?["delta"] as? [String: Any],
+                              let content = delta["content"] as? String {
+                        text = content.trimmingCharacters(in: .whitespacesAndNewlines)
+                    } else {
+                        text = ""
+                    }
+                } else {
+                    text = ""
+                }
             } else {
+                text = ""
+            }
+
+            if text.isEmpty {
+                // Last resort: try to grab the first JSON object in raw text.
+                if let start = raw.firstIndex(of: "{"), let end = raw.lastIndex(of: "}"), start < end {
+                    text = String(raw[start...end]).trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+            }
+
+            if text.isEmpty {
+                let preview = raw.prefix(300)
+                print("OpenAI raw response (preview): \(preview)")
                 throw OpenAIError.parse("cannot parse response")
             }
         }
