@@ -547,8 +547,22 @@ struct OpenAIClient {
         request.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.addValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: requestBody, options: [])
+        request.timeoutInterval = 120
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response): (Data, URLResponse)
+        do {
+            (data, response) = try await URLSession.shared.data(for: request)
+        } catch {
+            // Common on iOS when app backgrounds / network switches mid-request.
+            if let urlError = error as? URLError,
+               urlError.code == .networkConnectionLost || urlError.code == .timedOut {
+                // One quick retry.
+                try? await Task.sleep(nanoseconds: 600_000_000) // 0.6s
+                (data, response) = try await URLSession.shared.data(for: request)
+            } else {
+                throw error
+            }
+        }
         guard let http = response as? HTTPURLResponse else {
             throw OpenAIError.network("無法取得回應")
         }
@@ -623,9 +637,9 @@ struct OpenAIClient {
             }
 
             if text.isEmpty {
-                let preview = raw.prefix(300)
+                let preview = raw.prefix(400)
                 print("OpenAI raw response (preview): \(preview)")
-                throw OpenAIError.parse("cannot parse response")
+                throw OpenAIError.parse("cannot parse response (preview): \(preview)")
             }
         }
 
@@ -639,9 +653,10 @@ struct OpenAIClient {
             responseModel = try JSONDecoder().decode(HabitGuideResponse.self, from: jsonData)
         } catch {
             // Log the raw response for debugging
+            let preview = text.prefix(400)
             print("AI HabitGuide JSON parsing failed: \(error)")
-            print("Raw response: \(text.prefix(500))")
-            throw OpenAIError.parse("JSON 解析失敗：\(error.localizedDescription)")
+            print("Raw response (preview): \(preview)")
+            throw OpenAIError.parse("JSON 解析失敗：\(error.localizedDescription)\npreview: \(preview)")
         }
 
         let masteryDefinition = (responseModel.masteryDefinition ?? "")
