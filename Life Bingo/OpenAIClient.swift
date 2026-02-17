@@ -415,7 +415,7 @@ struct OpenAIClient {
 
         【輸出格式（只能輸出這個 JSON；不要額外文字）】
         {
-          "summary": ["...", "...", "...", "..."],
+          "summary": ["..."],
           "userArchetypeHypotheses": ["..."],
           "frictionMechanisms": ["..."],
           "failureModes": ["..."],
@@ -433,7 +433,19 @@ struct OpenAIClient {
         }
 
         【內容要求（務必照「陣列元素數量」來寫；不可把多行合併成同一個字串）】
-        - summary：必須是陣列，且元素數量 4–8 個；每個元素是一句完整句子（建議 12–28 字），不要在同一個元素內用換行塞多句。
+        - summary：這不是簡短摘要，而是「28 天內有效養成」的完整設計回答（PASS 1 的總藍圖）。
+          - 必須是陣列，元素數量 8–12 個。
+          - 每個元素 20–60 字左右，內容要像一段完整說明（可包含：設計原則/對應阻力/替代方案/中斷回復/可觀察成功徵兆）。
+          - 每個元素必須以固定標籤之一開頭（擇一）：
+            - 「總策略：」
+            - 「第1週：」
+            - 「第2週：」
+            - 「第3週：」
+            - 「第4週：」
+            - 「替代方案：」
+            - 「中斷後回復：」
+            - 「成功徵兆：」
+          - 不要寫成『第 N 天要做到 X 分鐘』這種 KPI/遞增計畫；要寫行為設計與抗中斷策略。
         - frictionMechanisms：至少 4 點，每點要帶具體例子（例如：下班決策疲勞→坐低就唔想郁）。
         - failureModes：至少 3 點，寫成具體情境。
         - interventionPlan：至少 4 條干預策略。
@@ -491,22 +503,32 @@ struct OpenAIClient {
 
         // Basic validation to ensure PASS 1 is not empty / not template.
         // Some models may accidentally put multi-line content into a single array element.
-        // We salvage by splitting the first element into lines, but only if that yields >= 4 non-empty items.
-        if report.summary.count < 4, report.summary.count == 1 {
+        // We salvage by splitting the first element into lines, but only if that yields enough non-empty items.
+        if report.summary.count < 8, report.summary.count == 1 {
             let merged = report.summary[0]
             let lines = merged
                 .split(whereSeparator: { $0 == "\n" || $0 == "\r" })
                 .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
                 .filter { !$0.isEmpty }
-            if lines.count >= 4 {
-                report.summary = Array(lines.prefix(8))
+            if lines.count >= 8 {
+                report.summary = Array(lines.prefix(12))
             }
         }
 
-        if report.summary.count < 4 { throw OpenAIError.parse("研究報告 summary 太短（需要 4–8 行）") }
+        if report.summary.count < 8 { throw OpenAIError.parse("研究報告 summary 太短（需要 8–12 段）") }
         if report.frictionMechanisms.count < 4 { throw OpenAIError.parse("研究報告 frictionMechanisms 少於 4") }
         if report.failureModes.count < 3 { throw OpenAIError.parse("研究報告 failureModes 少於 3") }
         if report.interventionPlan.count < 4 { throw OpenAIError.parse("研究報告 interventionPlan 少於 4") }
+
+        // summary must include key blueprint components (so it's a real answer, not a vague preface)
+        let summaryText = report.summary.joined(separator: "\n")
+        let requiredSummaryKeywords = ["替代方案", "中斷後回復", "成功徵兆"]
+        for k in requiredSummaryKeywords {
+            if !summaryText.contains(k) {
+                throw OpenAIError.parse("研究報告 summary 必須包含關鍵段落：\(k)")
+            }
+        }
+
         for itv in report.interventionPlan {
             if itv.interventionId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 throw OpenAIError.parse("研究報告 interventionId 不可為空")
