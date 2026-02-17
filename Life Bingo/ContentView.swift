@@ -1378,6 +1378,7 @@ struct HabitGuideSection: View {
     let onRefresh: () -> Void
     @State private var expandedStages: Set<Int> = []
     @State private var isRefreshing: Bool = false
+    @State private var isNormalizationExpanded: Bool = false
     @State private var isResearchExpanded: Bool = false
 
     var body: some View {
@@ -1411,6 +1412,55 @@ struct HabitGuideSection: View {
             if !isRefreshing {
                 if let guide {
                     VStack(alignment: .leading, spacing: 10) {
+                        if let norm = guide.goalNormalization {
+                            DisclosureGroup(isExpanded: $isNormalizationExpanded) {
+                                VStack(alignment: .leading, spacing: 10) {
+                                    VStack(alignment: .leading, spacing: 6) {
+                                        Text("能力本質")
+                                            .font(.system(size: 13, weight: .semibold))
+                                            .foregroundStyle(Theme.textPrimary)
+                                        Text(norm.normalizedSkill)
+                                            .font(.system(size: 13))
+                                            .foregroundStyle(Theme.textSecondary)
+                                    }
+
+                                    VStack(alignment: .leading, spacing: 6) {
+                                        Text("身份形態")
+                                            .font(.system(size: 13, weight: .semibold))
+                                            .foregroundStyle(Theme.textPrimary)
+                                        Text(norm.identityForm)
+                                            .font(.system(size: 13))
+                                            .foregroundStyle(Theme.textSecondary)
+                                    }
+
+                                    VStack(alignment: .leading, spacing: 6) {
+                                        Text("掌握狀態")
+                                            .font(.system(size: 13, weight: .semibold))
+                                            .foregroundStyle(Theme.textPrimary)
+                                        Text(norm.masteryState)
+                                            .font(.system(size: 13))
+                                            .foregroundStyle(Theme.textSecondary)
+                                    }
+
+                                    VStack(alignment: .leading, spacing: 6) {
+                                        Text("下游目標（已去頻率/KPI）")
+                                            .font(.system(size: 13, weight: .semibold))
+                                            .foregroundStyle(Theme.textPrimary)
+                                        Text(norm.goalSanitizedForDownstream)
+                                            .font(.system(size: 13))
+                                            .foregroundStyle(Theme.textSecondary)
+                                    }
+                                }
+                                .padding(.top, 6)
+                            } label: {
+                                Text("目標正規化（STEP 0）")
+                                    .font(Theme.Fonts.body())
+                                    .fontWeight(.semibold)
+                                    .foregroundStyle(Theme.textPrimary)
+                            }
+                            .padding(.vertical, 4)
+                        }
+
                         if let report = guide.researchReport {
                             DisclosureGroup(isExpanded: $isResearchExpanded) {
                                 VStack(alignment: .leading, spacing: 10) {
