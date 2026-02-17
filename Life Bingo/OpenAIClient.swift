@@ -400,6 +400,25 @@ struct OpenAIClient {
             .replacingOccurrences(of: "天天", with: "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
 
+        func extractTargetMinutes(from text: String) -> Int? {
+            let patterns = ["(\\d{1,3})\\s*分鐘", "(\\d{1,3})\\s*分", "(\\d{1,3})\\s*minutes", "(\\d{1,3})\\s*mins", "(\\d{1,3})\\s*min"]
+            for p in patterns {
+                if let regex = try? NSRegularExpression(pattern: p, options: [.caseInsensitive]) {
+                    let range = NSRange(text.startIndex..<text.endIndex, in: text)
+                    if let match = regex.firstMatch(in: text, options: [], range: range), match.numberOfRanges >= 2,
+                       let r1 = Range(match.range(at: 1), in: text) {
+                        return Int(text[r1])
+                    }
+                }
+            }
+            return nil
+        }
+        let targetMinutes = extractTargetMinutes(from: goal)
+        let targetMinutesRule: String = {
+            guard let targetMinutes, targetMinutes >= 10 else { return "" }
+            return "\n【重要：目標時長硬性要求】\n- 目標包含 \(targetMinutes) 分鐘：stage 4（扎根）必須至少有 1 個核心行為 step，並且該 step 的 duration 欄位必須明確寫「\(targetMinutes) 分鐘」（阿拉伯數字），不要用『半小時』這類模糊寫法。\n"
+        }()
+
         let prompt = """
         你是習慣地圖設計師。請為「\(sanitizedGoal.isEmpty ? goal : sanitizedGoal)」生成一份 5 階段的 Habit Map。
         注意：使用者輸入的目標可能包含「每天/每日/天天」等字樣，但你在任何輸出欄位都不得重複這些字樣；請用不含頻率詞的描述來寫所有步驟與任務。
@@ -434,6 +453,7 @@ struct OpenAIClient {
           例：下雨版/加班版/出差版的替代步。
         - stage 4 扎根：中斷後能回到軌道（自我修復），並且更少需要提醒。
           例：錯過一次後的「回歸步驟」+ 環境已固定。
+        \(targetMinutesRule)
 
         **STEP 的規則（每一步都是一個具體行動）：**
         禁止：
