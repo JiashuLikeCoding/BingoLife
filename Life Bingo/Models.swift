@@ -160,6 +160,13 @@ struct HabitGuide: Codable, Hashable {
     var goal: String
     /// STEP 0: goal normalization (ability/identity/mastery abstraction). Optional for backward compatibility.
     var goalNormalization: GoalNormalization?
+    /// STEP 1: expert research skill model (capabilities + leverage points). Optional for backward compatibility.
+    var skillModel: SkillModelReport?
+    /// STEP 2: capability stages (capability progression, not time stages). Optional for backward compatibility.
+    var capabilityStages: [CapabilityStage]?
+    /// STEP 3: behavior compilation (behaviors mapped to capability + leverage). Optional for backward compatibility.
+    var habitArchitecture: HabitArchitecture?
+
     /// PASS 1: research-first report (design rationale). Optional for backward compatibility.
     var researchReport: HabitResearchReport?
     /// What "mastery" looks like for this habit (clear, observable definition).
@@ -175,6 +182,9 @@ struct HabitGuide: Codable, Hashable {
     init(
         goal: String,
         goalNormalization: GoalNormalization? = nil,
+        skillModel: SkillModelReport? = nil,
+        capabilityStages: [CapabilityStage]? = nil,
+        habitArchitecture: HabitArchitecture? = nil,
         researchReport: HabitResearchReport? = nil,
         masteryDefinition: String = "",
         frictions: [String] = [],
@@ -184,6 +194,9 @@ struct HabitGuide: Codable, Hashable {
     ) {
         self.goal = goal
         self.goalNormalization = goalNormalization
+        self.skillModel = skillModel
+        self.capabilityStages = capabilityStages
+        self.habitArchitecture = habitArchitecture
         self.researchReport = researchReport
         self.masteryDefinition = masteryDefinition
         self.frictions = frictions
@@ -195,6 +208,9 @@ struct HabitGuide: Codable, Hashable {
     enum CodingKeys: String, CodingKey {
         case goal
         case goalNormalization
+        case skillModel
+        case capabilityStages
+        case habitArchitecture
         case researchReport
         case masteryDefinition
         case frictions
@@ -207,6 +223,9 @@ struct HabitGuide: Codable, Hashable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         goal = try container.decode(String.self, forKey: .goal)
         goalNormalization = try container.decodeIfPresent(GoalNormalization.self, forKey: .goalNormalization)
+        skillModel = try container.decodeIfPresent(SkillModelReport.self, forKey: .skillModel)
+        capabilityStages = try container.decodeIfPresent([CapabilityStage].self, forKey: .capabilityStages)
+        habitArchitecture = try container.decodeIfPresent(HabitArchitecture.self, forKey: .habitArchitecture)
         researchReport = try container.decodeIfPresent(HabitResearchReport.self, forKey: .researchReport)
         masteryDefinition = try container.decodeIfPresent(String.self, forKey: .masteryDefinition) ?? ""
         frictions = try container.decodeIfPresent([String].self, forKey: .frictions) ?? []
@@ -228,6 +247,61 @@ struct GoalNormalization: Codable, Hashable {
 
     /// Sanitized goal used for downstream prompting (must not contain cadence words).
     var goalSanitizedForDownstream: String
+}
+
+struct SkillModelReport: Codable, Hashable {
+    var requiredCapabilities: [RequiredCapability]
+    var dependencyOrder: [String]
+    var developmentCurve: String
+    var failurePatterns: [FailurePattern]
+    var leveragePoints: [LeveragePoint]
+}
+
+struct RequiredCapability: Codable, Hashable {
+    var capabilityId: String
+    var name: String
+    var description: String
+    var dependsOn: [String]
+}
+
+struct FailurePattern: Codable, Hashable {
+    var failureId: String
+    var pattern: String
+    var mechanism: String
+}
+
+struct LeveragePoint: Codable, Hashable {
+    var leverageId: String
+    var targetsCapability: String
+    var mechanism: String
+    var impact: String
+}
+
+struct CapabilityStage: Codable, Hashable {
+    var stage: Int
+    var focusCapability: String
+    var psychologicalGoal: String
+    var competenceGoal: String
+    var completionIndicator: String
+}
+
+struct HabitArchitecture: Codable, Hashable {
+    var stages: [HabitArchitectureStage]
+}
+
+struct HabitArchitectureStage: Codable, Hashable {
+    var stage: Int
+    var supportsCapability: String
+    var behaviors: [HabitBehavior]
+}
+
+struct HabitBehavior: Codable, Hashable {
+    var behaviorId: String
+    var title: String
+    var capabilityRef: String
+    var leverageRef: String
+    var whyBuildsCapability: String
+    var identityImpact: String
 }
 
 struct HabitResearchReport: Codable, Hashable {

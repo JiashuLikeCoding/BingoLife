@@ -1379,6 +1379,9 @@ struct HabitGuideSection: View {
     @State private var expandedStages: Set<Int> = []
     @State private var isRefreshing: Bool = false
     @State private var isNormalizationExpanded: Bool = false
+    @State private var isSkillModelExpanded: Bool = false
+    @State private var isCapabilityStagesExpanded: Bool = false
+    @State private var isBehaviorCompilationExpanded: Bool = false
     @State private var isResearchExpanded: Bool = false
 
     var body: some View {
@@ -1454,6 +1457,125 @@ struct HabitGuideSection: View {
                                 .padding(.top, 6)
                             } label: {
                                 Text("目標正規化（STEP 0）")
+                                    .font(Theme.Fonts.body())
+                                    .fontWeight(.semibold)
+                                    .foregroundStyle(Theme.textPrimary)
+                            }
+                            .padding(.vertical, 4)
+                        }
+
+                        if let sm = guide.skillModel {
+                            DisclosureGroup(isExpanded: $isSkillModelExpanded) {
+                                VStack(alignment: .leading, spacing: 10) {
+                                    if !sm.requiredCapabilities.isEmpty {
+                                        VStack(alignment: .leading, spacing: 6) {
+                                            Text("能力組成（Capabilities）")
+                                                .font(.system(size: 13, weight: .semibold))
+                                                .foregroundStyle(Theme.textPrimary)
+                                            ForEach(sm.requiredCapabilities, id: \.capabilityId) { cap in
+                                                Text("• [\(cap.capabilityId)] \(cap.name)：\(cap.description)")
+                                                    .font(.system(size: 13))
+                                                    .foregroundStyle(Theme.textSecondary)
+                                            }
+                                        }
+                                    }
+
+                                    if !sm.dependencyOrder.isEmpty {
+                                        VStack(alignment: .leading, spacing: 6) {
+                                            Text("能力依賴順序")
+                                                .font(.system(size: 13, weight: .semibold))
+                                                .foregroundStyle(Theme.textPrimary)
+                                            Text(sm.dependencyOrder.joined(separator: " → "))
+                                                .font(.system(size: 13))
+                                                .foregroundStyle(Theme.textSecondary)
+                                        }
+                                    }
+
+                                    if !sm.failurePatterns.isEmpty {
+                                        VStack(alignment: .leading, spacing: 6) {
+                                            Text("常見失敗曲線")
+                                                .font(.system(size: 13, weight: .semibold))
+                                                .foregroundStyle(Theme.textPrimary)
+                                            ForEach(sm.failurePatterns, id: \.failureId) { fp in
+                                                Text("• [\(fp.failureId)] \(fp.pattern)")
+                                                    .font(.system(size: 13))
+                                                    .foregroundStyle(Theme.textSecondary)
+                                            }
+                                        }
+                                    }
+
+                                    if !sm.leveragePoints.isEmpty {
+                                        VStack(alignment: .leading, spacing: 6) {
+                                            Text("成長槓桿點（Leverage Points）")
+                                                .font(.system(size: 13, weight: .semibold))
+                                                .foregroundStyle(Theme.textPrimary)
+                                            ForEach(sm.leveragePoints, id: \.leverageId) { lp in
+                                                Text("• [\(lp.leverageId)] → \(lp.targetsCapability)：\(lp.mechanism)")
+                                                    .font(.system(size: 13))
+                                                    .foregroundStyle(Theme.textSecondary)
+                                            }
+                                        }
+                                    }
+                                }
+                                .padding(.top, 6)
+                            } label: {
+                                Text("能力模型（STEP 1）")
+                                    .font(Theme.Fonts.body())
+                                    .fontWeight(.semibold)
+                                    .foregroundStyle(Theme.textPrimary)
+                            }
+                            .padding(.vertical, 4)
+                        }
+
+                        if let stages = guide.capabilityStages, !stages.isEmpty {
+                            DisclosureGroup(isExpanded: $isCapabilityStagesExpanded) {
+                                VStack(alignment: .leading, spacing: 10) {
+                                    ForEach(stages, id: \.stage) { st in
+                                        VStack(alignment: .leading, spacing: 4) {
+                                            Text("Stage \(st.stage) → \(st.focusCapability)")
+                                                .font(.system(size: 13, weight: .semibold))
+                                                .foregroundStyle(Theme.textPrimary)
+                                            Text("心理目標：\(st.psychologicalGoal)")
+                                                .font(.system(size: 13))
+                                                .foregroundStyle(Theme.textSecondary)
+                                            Text("能力目標：\(st.competenceGoal)")
+                                                .font(.system(size: 13))
+                                                .foregroundStyle(Theme.textSecondary)
+                                            Text("完成徵兆：\(st.completionIndicator)")
+                                                .font(.system(size: 13))
+                                                .foregroundStyle(Theme.textSecondary)
+                                        }
+                                    }
+                                }
+                                .padding(.top, 6)
+                            } label: {
+                                Text("能力階段（STEP 2）")
+                                    .font(Theme.Fonts.body())
+                                    .fontWeight(.semibold)
+                                    .foregroundStyle(Theme.textPrimary)
+                            }
+                            .padding(.vertical, 4)
+                        }
+
+                        if let arch = guide.habitArchitecture {
+                            DisclosureGroup(isExpanded: $isBehaviorCompilationExpanded) {
+                                VStack(alignment: .leading, spacing: 10) {
+                                    ForEach(arch.stages, id: \.stage) { st in
+                                        VStack(alignment: .leading, spacing: 6) {
+                                            Text("Stage \(st.stage)（支援 \(st.supportsCapability)）")
+                                                .font(.system(size: 13, weight: .semibold))
+                                                .foregroundStyle(Theme.textPrimary)
+                                            ForEach(st.behaviors, id: \.behaviorId) { b in
+                                                Text("• [\(b.behaviorId)] \(b.title)（\(b.capabilityRef), \(b.leverageRef)）")
+                                                    .font(.system(size: 13))
+                                                    .foregroundStyle(Theme.textSecondary)
+                                            }
+                                        }
+                                    }
+                                }
+                                .padding(.top, 6)
+                            } label: {
+                                Text("行為編譯（STEP 3）")
                                     .font(Theme.Fonts.body())
                                     .fontWeight(.semibold)
                                     .foregroundStyle(Theme.textPrimary)

@@ -669,6 +669,418 @@ struct OpenAIClient {
         return report
     }
 
+    private func generateSkillModel(normalization: GoalNormalization, researchReport: HabitResearchReport, previousError: String? = nil) async throws -> SkillModelReport {
+        let safeGoal = normalization.goalSanitizedForDownstream.trimmingCharacters(in: .whitespacesAndNewlines)
+        let previousErrorBlock: String = {
+            guard let previousError, !previousError.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return "" }
+            return "\n【上次輸出未通過驗證】\n\(previousError)\n請你修正後重新輸出，並確保完全符合本次的數量與格式要求。\n"
+        }()
+
+        let researchHints: String = {
+            let fr = researchReport.frictionMechanisms.prefix(4).map { "- \($0)" }.joined(separator: "\n")
+            let fm = researchReport.failureModes.prefix(3).map { "- \($0)" }.joined(separator: "\n")
+            let itv = researchReport.interventionPlan.prefix(6).map { "- \($0.interventionId): \($0.title)" }.joined(separator: "\n")
+            return "阻力機制：\n\(fr)\n\n失敗模式：\n\(fm)\n\n既有干預策略：\n\(itv)"
+        }()
+
+        let prompt = """
+        你是「Behavioral Scientist + Skill Acquisition Architect + Positive Psychology Expert」。
+        你要處理 STEP 1 — EXPERT RESEARCH（專家研究）。此回合只允許輸出 skillModel（能力建模），禁止任何步驟/任務/行動/計畫。
+        \(previousErrorBlock)
+
+        【硬性禁止】
+        - 禁止產生任何 steps / tasks / 行動指令 / 練習項目 / 階段名稱（例如 Stage 0-4）/ bingoTasks / Habit Map。
+        - 禁止時間遞增模板（3→10→30）。
+        - 禁止輸出 cadence 字：每天、每日、天天。
+        - 禁止 KPI/連續天數/時間作為掌握定義。
+
+        【輸入（STEP0 + PASS1 摘要）】
+        goal（sanitize 後）：\(safeGoal)
+        normalizedSkill：\(normalization.normalizedSkill)
+        identityForm：\(normalization.identityForm)
+        masteryState：\(normalization.masteryState)
+
+        PASS1 研究提示（僅供理解，不要輸出行動）：
+        \(researchHints)
+
+        【輸出格式】
+        - 只輸出單一 JSON 物件（不要額外文字）
+
+        【輸出 schema】
+        {
+          "step": 1,
+          "skillModel": {
+            "requiredCapabilities": [
+              { "capabilityId": "C1", "name": "...", "description": "...", "dependsOn": [] }
+            ],
+            "dependencyOrder": ["C1","C2","C3"],
+            "developmentCurve": "...",
+            "failurePatterns": [
+              { "failureId": "F1", "pattern": "...", "mechanism": "..." }
+            ],
+            "leveragePoints": [
+              { "leverageId": "L1", "targetsCapability": "C1", "mechanism": "...", "impact": "..." }
+            ]
+          }
+        }
+
+        【內容要求】
+        - requiredCapabilities：至少 3 個（C1..C#），每個 dependsOn 只能引用已存在的 capabilityId。
+        - dependencyOrder：至少 3 個，且每個都必須出現在 requiredCapabilities。
+        - failurePatterns：至少 3 個（F1..），寫具體失敗曲線與心理機制（不是解法）。
+        - leveragePoints：至少 4 個（L1..），每個 targetsCapability 必須引用存在的 capabilityId。
+
+        只回傳 JSON。
+        """
+
+        struct SkillModelEnvelope: Decodable {
+            let step: Int
+            let skillModel: SkillModelReport
+        }
+
+        let requestBody: [String: Any] = [
+            "model": model,
+            "input": [
+                ["role": "system", "content": "You are a helpful assistant. Respond in JSON only."],
+                ["role": "user", "content": prompt]
+            ],
+            "text": ["format": ["type": "json_object"]],
+            "max_output_tokens": 1600
+        ]
+
+        var request = URLRequest(url: URL(string: "https://api.openai.com/v1/responses")!)
+        request.httpMethod = "POST"
+        request.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: requestBody, options: [])
+        request.timeoutInterval = 120
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw OpenAIError.network("無法取得回應") }
+        if !(200...299).contains(http.statusCode) {
+            let message = String(data: data, encoding: .utf8) ?? "狀態碼 \(http.statusCode)"
+            throw OpenAIError.server(message)
+        }
+
+        let decoded = try JSONDecoder().decode(OpenAIResponse.self, from: data)
+        if let error = decoded.error { throw OpenAIError.server(error.message) }
+        let text = decoded.outputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, let jsonData = text.data(using: .utf8) else {
+            throw OpenAIError.parse("STEP1 回應內容為空")
+        }
+
+        let env: SkillModelEnvelope
+        do {
+            env = try JSONDecoder().decode(SkillModelEnvelope.self, from: jsonData)
+        } catch {
+            let preview = text.prefix(400)
+            throw OpenAIError.parse("STEP1 JSON 解析失敗：\(error.localizedDescription)\npreview: \(preview)")
+        }
+
+        if env.step != 1 { throw OpenAIError.parse("STEP1 step 必須為 1") }
+
+        let banned = ["每天", "每日", "天天"]
+        let allText = [
+            env.skillModel.developmentCurve,
+            env.skillModel.requiredCapabilities.map { "\($0.capabilityId) \($0.name) \($0.description) \($0.dependsOn.joined(separator: ","))" }.joined(separator: "\n"),
+            env.skillModel.failurePatterns.map { "\($0.failureId) \($0.pattern) \($0.mechanism)" }.joined(separator: "\n"),
+            env.skillModel.leveragePoints.map { "\($0.leverageId) \($0.targetsCapability) \($0.mechanism) \($0.impact)" }.joined(separator: "\n")
+        ].joined(separator: "\n")
+        for w in banned where allText.contains(w) {
+            throw OpenAIError.parse("STEP1 輸出包含禁字：\(w)")
+        }
+
+        // Basic structure validation
+        if env.skillModel.requiredCapabilities.count < 3 { throw OpenAIError.parse("STEP1 requiredCapabilities 少於 3") }
+        if env.skillModel.dependencyOrder.count < 3 { throw OpenAIError.parse("STEP1 dependencyOrder 少於 3") }
+        if env.skillModel.failurePatterns.count < 3 { throw OpenAIError.parse("STEP1 failurePatterns 少於 3") }
+        if env.skillModel.leveragePoints.count < 4 { throw OpenAIError.parse("STEP1 leveragePoints 少於 4") }
+
+        let capIds = Set(env.skillModel.requiredCapabilities.map { $0.capabilityId.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })
+        if capIds.count < 3 { throw OpenAIError.parse("STEP1 capabilityId 重複或不足") }
+        for c in env.skillModel.requiredCapabilities {
+            for d in c.dependsOn {
+                if !d.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !capIds.contains(d) {
+                    throw OpenAIError.parse("STEP1 dependsOn 引用不存在 capabilityId：\(d)")
+                }
+            }
+        }
+        for id in env.skillModel.dependencyOrder {
+            if !capIds.contains(id) {
+                throw OpenAIError.parse("STEP1 dependencyOrder 引用不存在 capabilityId：\(id)")
+            }
+        }
+        let levIds = Set(env.skillModel.leveragePoints.map { $0.leverageId.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })
+        if levIds.count < env.skillModel.leveragePoints.count { throw OpenAIError.parse("STEP1 leverageId 不可重複") }
+        for lp in env.skillModel.leveragePoints {
+            if !capIds.contains(lp.targetsCapability) {
+                throw OpenAIError.parse("STEP1 leveragePoint.targetsCapability 引用不存在 capabilityId：\(lp.targetsCapability)")
+            }
+        }
+
+        return env.skillModel
+    }
+
+    private func generateCapabilityStages(normalization: GoalNormalization, skillModel: SkillModelReport, previousError: String? = nil) async throws -> [CapabilityStage] {
+        let safeGoal = normalization.goalSanitizedForDownstream.trimmingCharacters(in: .whitespacesAndNewlines)
+        let previousErrorBlock: String = {
+            guard let previousError, !previousError.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return "" }
+            return "\n【上次輸出未通過驗證】\n\(previousError)\n請你修正後重新輸出，並確保完全符合本次的格式要求。\n"
+        }()
+
+        let capList = skillModel.requiredCapabilities.map { "- \($0.capabilityId): \($0.name)｜\($0.description)" }.joined(separator: "\n")
+        let dep = skillModel.dependencyOrder.joined(separator: ", ")
+
+        let prompt = """
+        你是「Behavioral Scientist + Skill Acquisition Architect + Positive Psychology Expert」。
+        你要處理 STEP 2 — CAPABILITY STAGES（能力階段建構）。此回合只允許建立能力發展階段（不是時間階段），禁止任何步驟/任務/行動。
+        \(previousErrorBlock)
+
+        【硬性禁止】
+        - 禁止產生任何 steps / tasks / 行動指令 / 練習項目 / Habit Map。
+        - 禁止用時間/數量遞增作為進階依據。
+        - 禁止輸出 cadence 字：每天、每日、天天。
+
+        【輸入】
+        goal（sanitize 後）：\(safeGoal)
+        normalizedSkill：\(normalization.normalizedSkill)
+        masteryState：\(normalization.masteryState)
+
+        requiredCapabilities：
+        \(capList)
+        dependencyOrder：\(dep)
+
+        【輸出格式】
+        - 只輸出單一 JSON 物件（不要額外文字）
+
+        【輸出 schema】
+        { "step": 2, "capabilityStages": [ { "stage": 0, "focusCapability": "C1", "psychologicalGoal": "...", "competenceGoal": "...", "completionIndicator": "..." } ] }
+
+        【內容要求】
+        - capabilityStages 至少 3 個 stage，stage 必須從 0 開始連續遞增。
+        - focusCapability 必須是存在的 capabilityId。
+        - completionIndicator 必須是「可觀察能力徵兆」，非 KPI/時間/次數。
+
+        只回傳 JSON。
+        """
+
+        struct StagesEnvelope: Decodable {
+            let step: Int
+            let capabilityStages: [CapabilityStage]
+        }
+
+        let requestBody: [String: Any] = [
+            "model": model,
+            "input": [
+                ["role": "system", "content": "You are a helpful assistant. Respond in JSON only."],
+                ["role": "user", "content": prompt]
+            ],
+            "text": ["format": ["type": "json_object"]],
+            "max_output_tokens": 1400
+        ]
+
+        var request = URLRequest(url: URL(string: "https://api.openai.com/v1/responses")!)
+        request.httpMethod = "POST"
+        request.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: requestBody, options: [])
+        request.timeoutInterval = 120
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw OpenAIError.network("無法取得回應") }
+        if !(200...299).contains(http.statusCode) {
+            let message = String(data: data, encoding: .utf8) ?? "狀態碼 \(http.statusCode)"
+            throw OpenAIError.server(message)
+        }
+
+        let decoded = try JSONDecoder().decode(OpenAIResponse.self, from: data)
+        if let error = decoded.error { throw OpenAIError.server(error.message) }
+        let text = decoded.outputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, let jsonData = text.data(using: .utf8) else {
+            throw OpenAIError.parse("STEP2 回應內容為空")
+        }
+
+        let env: StagesEnvelope
+        do {
+            env = try JSONDecoder().decode(StagesEnvelope.self, from: jsonData)
+        } catch {
+            let preview = text.prefix(400)
+            throw OpenAIError.parse("STEP2 JSON 解析失敗：\(error.localizedDescription)\npreview: \(preview)")
+        }
+
+        if env.step != 2 { throw OpenAIError.parse("STEP2 step 必須為 2") }
+
+        let banned = ["每天", "每日", "天天"]
+        let allText = env.capabilityStages.map { "\($0.stage) \($0.focusCapability) \($0.psychologicalGoal) \($0.competenceGoal) \($0.completionIndicator)" }.joined(separator: "\n")
+        for w in banned where allText.contains(w) { throw OpenAIError.parse("STEP2 輸出包含禁字：\(w)") }
+
+        if env.capabilityStages.count < 3 { throw OpenAIError.parse("STEP2 capabilityStages 少於 3") }
+
+        let capIds = Set(skillModel.requiredCapabilities.map { $0.capabilityId })
+        var expectedStage = 0
+        for st in env.capabilityStages {
+            if st.stage != expectedStage { throw OpenAIError.parse("STEP2 stage 必須從 0 連續遞增（期望 \(expectedStage)，得到 \(st.stage)）") }
+            expectedStage += 1
+            if !capIds.contains(st.focusCapability) {
+                throw OpenAIError.parse("STEP2 focusCapability 引用不存在 capabilityId：\(st.focusCapability)")
+            }
+            if st.completionIndicator.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                throw OpenAIError.parse("STEP2 completionIndicator 不可為空")
+            }
+        }
+
+        return env.capabilityStages
+    }
+
+    private func generateHabitArchitecture(normalization: GoalNormalization, skillModel: SkillModelReport, capabilityStages: [CapabilityStage], previousError: String? = nil) async throws -> HabitArchitecture {
+        let safeGoal = normalization.goalSanitizedForDownstream.trimmingCharacters(in: .whitespacesAndNewlines)
+        let previousErrorBlock: String = {
+            guard let previousError, !previousError.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return "" }
+            return "\n【上次輸出未通過驗證】\n\(previousError)\n請你修正後重新輸出，並確保完全符合本次的格式要求。\n"
+        }()
+
+        let caps = skillModel.requiredCapabilities.map { "- \($0.capabilityId): \($0.name)" }.joined(separator: "\n")
+        let levs = skillModel.leveragePoints.map { "- \($0.leverageId) -> \($0.targetsCapability): \($0.mechanism)" }.joined(separator: "\n")
+        let stageRefs = capabilityStages.map { "- stage \($0.stage): focus \($0.focusCapability)" }.joined(separator: "\n")
+
+        let prompt = """
+        你是「Behavioral Scientist + Skill Acquisition Architect + Positive Psychology Expert」。
+        你要處理 STEP 3 — BEHAVIOR COMPILATION（行為編譯）。現在才允許生成具體行為。
+        \(previousErrorBlock)
+
+        【硬性禁止】
+        - 禁止時間遞增模板（3→10→30）。
+        - 禁止輸出 cadence 字：每天、每日、天天。
+        - 禁止 KPI/連續天數/時間作為衡量。
+
+        【輸入】
+        goal（sanitize 後）：\(safeGoal)
+        identityForm：\(normalization.identityForm)
+        masteryState：\(normalization.masteryState)
+
+        capabilities：
+        \(caps)
+
+        leveragePoints：
+        \(levs)
+
+        capabilityStages：
+        \(stageRefs)
+
+        【規則】
+        - 每個行為必須引用 capabilityId（capabilityRef）
+        - 每個行為必須引用 leverageId（leverageRef）
+        - 每個行為必須說明 whyBuildsCapability（機制層）
+        - 每個行為必須說明 identityImpact（身份層）
+        - 行為數量最少但必要：每階段 1–2 個
+
+        【輸出格式】
+        - 只輸出單一 JSON 物件（不要額外文字）
+
+        【輸出 schema】
+        {
+          "step": 3,
+          "habitArchitecture": {
+            "stages": [
+              {
+                "stage": 0,
+                "supportsCapability": "C1",
+                "behaviors": [
+                  {
+                    "behaviorId": "B1",
+                    "title": "具體行為句",
+                    "capabilityRef": "C1",
+                    "leverageRef": "L1",
+                    "whyBuildsCapability": "...",
+                    "identityImpact": "..."
+                  }
+                ]
+              }
+            ]
+          }
+        }
+
+        只回傳 JSON。
+        """
+
+        struct ArchEnvelope: Decodable {
+            let step: Int
+            let habitArchitecture: HabitArchitecture
+        }
+
+        let requestBody: [String: Any] = [
+            "model": model,
+            "input": [
+                ["role": "system", "content": "You are a helpful assistant. Respond in JSON only."],
+                ["role": "user", "content": prompt]
+            ],
+            "text": ["format": ["type": "json_object"]],
+            "max_output_tokens": 1600
+        ]
+
+        var request = URLRequest(url: URL(string: "https://api.openai.com/v1/responses")!)
+        request.httpMethod = "POST"
+        request.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: requestBody, options: [])
+        request.timeoutInterval = 120
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw OpenAIError.network("無法取得回應") }
+        if !(200...299).contains(http.statusCode) {
+            let message = String(data: data, encoding: .utf8) ?? "狀態碼 \(http.statusCode)"
+            throw OpenAIError.server(message)
+        }
+
+        let decoded = try JSONDecoder().decode(OpenAIResponse.self, from: data)
+        if let error = decoded.error { throw OpenAIError.server(error.message) }
+        let text = decoded.outputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, let jsonData = text.data(using: .utf8) else {
+            throw OpenAIError.parse("STEP3 回應內容為空")
+        }
+
+        let env: ArchEnvelope
+        do {
+            env = try JSONDecoder().decode(ArchEnvelope.self, from: jsonData)
+        } catch {
+            let preview = text.prefix(400)
+            throw OpenAIError.parse("STEP3 JSON 解析失敗：\(error.localizedDescription)\npreview: \(preview)")
+        }
+
+        if env.step != 3 { throw OpenAIError.parse("STEP3 step 必須為 3") }
+
+        let banned = ["每天", "每日", "天天"]
+        let allText = env.habitArchitecture.stages.flatMap { st in
+            st.behaviors.map { b in "\(b.behaviorId) \(b.title) \(b.capabilityRef) \(b.leverageRef) \(b.whyBuildsCapability) \(b.identityImpact)" }
+        }.joined(separator: "\n")
+        for w in banned where allText.contains(w) { throw OpenAIError.parse("STEP3 輸出包含禁字：\(w)") }
+
+        let capIds = Set(skillModel.requiredCapabilities.map { $0.capabilityId })
+        let levIds = Set(skillModel.leveragePoints.map { $0.leverageId })
+
+        if env.habitArchitecture.stages.count < max(1, capabilityStages.count) {
+            throw OpenAIError.parse("STEP3 habitArchitecture.stages 數量不足（需要覆蓋 STEP2 stages）")
+        }
+
+        for st in env.habitArchitecture.stages {
+            if !capIds.contains(st.supportsCapability) {
+                throw OpenAIError.parse("STEP3 supportsCapability 引用不存在 capabilityId：\(st.supportsCapability)")
+            }
+            if st.behaviors.isEmpty || st.behaviors.count > 2 {
+                throw OpenAIError.parse("STEP3 stage \(st.stage) behaviors 必須為 1–2 個")
+            }
+            for b in st.behaviors {
+                if !capIds.contains(b.capabilityRef) { throw OpenAIError.parse("STEP3 capabilityRef 引用不存在：\(b.capabilityRef)") }
+                if !levIds.contains(b.leverageRef) { throw OpenAIError.parse("STEP3 leverageRef 引用不存在：\(b.leverageRef)") }
+                if b.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { throw OpenAIError.parse("STEP3 behavior title 不可為空") }
+                if b.whyBuildsCapability.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { throw OpenAIError.parse("STEP3 whyBuildsCapability 不可為空") }
+                if b.identityImpact.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { throw OpenAIError.parse("STEP3 identityImpact 不可為空") }
+            }
+        }
+
+        return env.habitArchitecture
+    }
+
     func generateHabitGuide(goal: String) async throws -> HabitGuide {
         let normalization: GoalNormalization
         do {
@@ -696,6 +1108,45 @@ struct OpenAIClient {
                 errText = error.localizedDescription
             }
             researchReport = try await generateHabitResearchReport(goal: goal, normalization: normalization, previousError: errText)
+        }
+
+        let skillModel: SkillModelReport
+        do {
+            skillModel = try await generateSkillModel(normalization: normalization, researchReport: researchReport)
+        } catch {
+            let errText: String
+            if let e = error as? OpenAIError {
+                errText = String(describing: e)
+            } else {
+                errText = error.localizedDescription
+            }
+            skillModel = try await generateSkillModel(normalization: normalization, researchReport: researchReport, previousError: errText)
+        }
+
+        let capabilityStages: [CapabilityStage]
+        do {
+            capabilityStages = try await generateCapabilityStages(normalization: normalization, skillModel: skillModel)
+        } catch {
+            let errText: String
+            if let e = error as? OpenAIError {
+                errText = String(describing: e)
+            } else {
+                errText = error.localizedDescription
+            }
+            capabilityStages = try await generateCapabilityStages(normalization: normalization, skillModel: skillModel, previousError: errText)
+        }
+
+        let habitArchitecture: HabitArchitecture
+        do {
+            habitArchitecture = try await generateHabitArchitecture(normalization: normalization, skillModel: skillModel, capabilityStages: capabilityStages)
+        } catch {
+            let errText: String
+            if let e = error as? OpenAIError {
+                errText = String(describing: e)
+            } else {
+                errText = error.localizedDescription
+            }
+            habitArchitecture = try await generateHabitArchitecture(normalization: normalization, skillModel: skillModel, capabilityStages: capabilityStages, previousError: errText)
         }
 
         // Avoid echoing user-entered cadence words that are banned in AI output.
@@ -1075,6 +1526,9 @@ struct OpenAIClient {
         return HabitGuide(
             goal: goal,
             goalNormalization: normalization,
+            skillModel: skillModel,
+            capabilityStages: capabilityStages,
+            habitArchitecture: habitArchitecture,
             researchReport: researchReport,
             masteryDefinition: masteryDefinition,
             frictions: frictions,
