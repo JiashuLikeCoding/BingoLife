@@ -391,16 +391,22 @@ struct OpenAIClient {
         return responseObj.message
     }
 
-    private func generateHabitResearchReport(goal: String) async throws -> HabitResearchReport {
+    private func generateHabitResearchReport(goal: String, previousError: String? = nil) async throws -> HabitResearchReport {
         let sanitizedGoal = goal
             .replacingOccurrences(of: "每天", with: "")
             .replacingOccurrences(of: "每日", with: "")
             .replacingOccurrences(of: "天天", with: "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
 
+        let previousErrorBlock: String = {
+            guard let previousError, !previousError.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return "" }
+            return "\n【上次輸出未通過驗證】\n\(previousError)\n請你修正後重新輸出，並確保完全符合本次的數量與格式要求。\n"
+        }()
+
         let prompt = """
         你是行為科學導向的習慣養成研究員與產品設計師。
         請先為「\(sanitizedGoal.isEmpty ? goal : sanitizedGoal)」寫一份研究報告（PASS 1），用繁體中文，並輸出 JSON。
+        \(previousErrorBlock)
 
         【硬規則】
         - 使用者輸入可能包含「每天/每日/天天」，但你在任何輸出欄位都不得重複這些字樣。
@@ -484,7 +490,7 @@ struct OpenAIClient {
         }
 
         // Basic validation to ensure PASS 1 is not empty / not template.
-        if report.summary.count < 3 { throw OpenAIError.parse("研究報告 summary 太短") }
+        if report.summary.count < 4 { throw OpenAIError.parse("研究報告 summary 太短（需要 4–8 行）") }
         if report.frictionMechanisms.count < 4 { throw OpenAIError.parse("研究報告 frictionMechanisms 少於 4") }
         if report.failureModes.count < 3 { throw OpenAIError.parse("研究報告 failureModes 少於 3") }
         if report.interventionPlan.count < 4 { throw OpenAIError.parse("研究報告 interventionPlan 少於 4") }
@@ -507,7 +513,19 @@ struct OpenAIClient {
     }
 
     func generateHabitGuide(goal: String) async throws -> HabitGuide {
-        let researchReport = try await generateHabitResearchReport(goal: goal)
+        let researchReport: HabitResearchReport
+        do {
+            researchReport = try await generateHabitResearchReport(goal: goal)
+        } catch {
+            // One self-fix retry: feed the validation error back to PASS 1.
+            let errText: String
+            if let e = error as? OpenAIError {
+                errText = String(describing: e)
+            } else {
+                errText = error.localizedDescription
+            }
+            researchReport = try await generateHabitResearchReport(goal: goal, previousError: errText)
+        }
 
         // Avoid echoing user-entered cadence words that are banned in AI output.
         // We keep the original goal for UI display elsewhere, but prompt the model with a neutral phrasing.
