@@ -158,6 +158,8 @@ struct GratitudeEntry: Identifiable, Codable, Hashable {
 
 struct HabitGuide: Codable, Hashable {
     var goal: String
+    /// PASS 1: research-first report (design rationale). Optional for backward compatibility.
+    var researchReport: HabitResearchReport?
     /// What "mastery" looks like for this habit (clear, observable definition).
     var masteryDefinition: String
     /// Key frictions/resistances that tend to block progress.
@@ -170,6 +172,7 @@ struct HabitGuide: Codable, Hashable {
 
     init(
         goal: String,
+        researchReport: HabitResearchReport? = nil,
         masteryDefinition: String = "",
         frictions: [String] = [],
         methodRoute: [String] = [],
@@ -177,6 +180,7 @@ struct HabitGuide: Codable, Hashable {
         updatedAt: Date
     ) {
         self.goal = goal
+        self.researchReport = researchReport
         self.masteryDefinition = masteryDefinition
         self.frictions = frictions
         self.methodRoute = methodRoute
@@ -186,6 +190,7 @@ struct HabitGuide: Codable, Hashable {
 
     enum CodingKeys: String, CodingKey {
         case goal
+        case researchReport
         case masteryDefinition
         case frictions
         case methodRoute
@@ -196,12 +201,44 @@ struct HabitGuide: Codable, Hashable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         goal = try container.decode(String.self, forKey: .goal)
+        researchReport = try container.decodeIfPresent(HabitResearchReport.self, forKey: .researchReport)
         masteryDefinition = try container.decodeIfPresent(String.self, forKey: .masteryDefinition) ?? ""
         frictions = try container.decodeIfPresent([String].self, forKey: .frictions) ?? []
         methodRoute = try container.decodeIfPresent([String].self, forKey: .methodRoute) ?? []
         stages = try container.decode([HabitStageGuide].self, forKey: .stages)
         updatedAt = try container.decode(Date.self, forKey: .updatedAt)
     }
+}
+
+struct HabitResearchReport: Codable, Hashable {
+    /// 4-8 lines, plain language.
+    var summary: [String]
+    /// Hypotheses about who the user might be (without judging).
+    var userArchetypeHypotheses: [String]
+    /// Mechanism-level frictions (decision fatigue, perfectionism, etc.) + concrete examples.
+    var frictionMechanisms: [String]
+    /// Likely failure modes (e.g., "3 days later drop"), written concretely.
+    var failureModes: [String]
+    /// Intervention plan (research-backed design actions). >= 3.
+    var interventionPlan: [HabitIntervention]
+}
+
+struct HabitIntervention: Identifiable, Codable, Hashable {
+    var id: String { interventionId }
+
+    var interventionId: String
+    /// Short name, not abstract slogans.
+    var title: String
+    /// What psychological / behavioral mechanism it targets.
+    var mechanism: String
+    /// Concrete explanation of how it reduces resistance.
+    var howItReducesResistance: String
+    /// Alternatives for bad days (>= 2).
+    var variants: [String]
+    /// Recovery script after skipping (>= 2).
+    var recoveryScript: [String]
+    /// Observable signs this intervention is working.
+    var successSignals: [String]
 }
 
 struct HabitStageGuide: Codable, Hashable {

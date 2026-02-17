@@ -391,7 +391,124 @@ struct OpenAIClient {
         return responseObj.message
     }
 
+    private func generateHabitResearchReport(goal: String) async throws -> HabitResearchReport {
+        let sanitizedGoal = goal
+            .replacingOccurrences(of: "每天", with: "")
+            .replacingOccurrences(of: "每日", with: "")
+            .replacingOccurrences(of: "天天", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let prompt = """
+        你是行為科學導向的習慣養成研究員與產品設計師。
+        請先為「\(sanitizedGoal.isEmpty ? goal : sanitizedGoal)」寫一份研究報告（PASS 1），用繁體中文，並輸出 JSON。
+
+        【硬規則】
+        - 使用者輸入可能包含「每天/每日/天天」，但你在任何輸出欄位都不得重複這些字樣。
+        - 你要做的是「心理工程／行為設計」，不是把時間切細遞增。
+        - 內容要具體，可落地；禁止用口號充數。
+
+        【輸出格式】
+        {
+          "summary": ["..."],
+          "userArchetypeHypotheses": ["..."],
+          "frictionMechanisms": ["..."],
+          "failureModes": ["..."],
+          "interventionPlan": [
+            {
+              "interventionId": "I1",
+              "title": "...",
+              "mechanism": "...",
+              "howItReducesResistance": "...",
+              "variants": ["...", "..."],
+              "recoveryScript": ["...", "..."],
+              "successSignals": ["...", "..."]
+            }
+          ]
+        }
+
+        【內容要求】
+        - summary：4–8 行，講清楚你點樣設計，點樣避免三日後停。
+        - frictionMechanisms：至少 4 點，每點要帶具體例子（例如：下班決策疲勞→坐低就唔想郁）。
+        - failureModes：至少 3 點，寫成具體情境。
+        - interventionPlan：至少 4 條干預策略。
+          - 每條必須同「frictionMechanisms / failureModes」對應。
+          - variants：至少 2 個（太累/落雨/時間少/情緒差等低配版本）。
+          - recoveryScript：至少 2 個（錯過一次之後點樣回到最小版本；唔追 KPI、唔補做）。
+          - successSignals：至少 2 個可觀察徵兆（唔係 KPI）。
+
+        只回傳 JSON。
+        """
+
+        let requestBody: [String: Any] = [
+            "model": model,
+            "input": [
+                ["role": "system", "content": "You are a helpful assistant. Respond in JSON only."],
+                ["role": "user", "content": prompt]
+            ],
+            "text": ["format": ["type": "json_object"]],
+            "max_output_tokens": 1800
+        ]
+
+        var request = URLRequest(url: URL(string: "https://api.openai.com/v1/responses")!)
+        request.httpMethod = "POST"
+        request.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: requestBody, options: [])
+        request.timeoutInterval = 120
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw OpenAIError.network("無法取得回應")
+        }
+        if !(200...299).contains(http.statusCode) {
+            let message = String(data: data, encoding: .utf8) ?? "狀態碼 \(http.statusCode)"
+            throw OpenAIError.server(message)
+        }
+
+        let decoded = try JSONDecoder().decode(OpenAIResponse.self, from: data)
+        if let error = decoded.error {
+            throw OpenAIError.server(error.message)
+        }
+
+        let text = decoded.outputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, let jsonData = text.data(using: .utf8) else {
+            throw OpenAIError.parse("回應內容為空")
+        }
+
+        let report: HabitResearchReport
+        do {
+            report = try JSONDecoder().decode(HabitResearchReport.self, from: jsonData)
+        } catch {
+            let preview = text.prefix(400)
+            throw OpenAIError.parse("研究報告 JSON 解析失敗：\(error.localizedDescription)\npreview: \(preview)")
+        }
+
+        // Basic validation to ensure PASS 1 is not empty / not template.
+        if report.summary.count < 3 { throw OpenAIError.parse("研究報告 summary 太短") }
+        if report.frictionMechanisms.count < 4 { throw OpenAIError.parse("研究報告 frictionMechanisms 少於 4") }
+        if report.failureModes.count < 3 { throw OpenAIError.parse("研究報告 failureModes 少於 3") }
+        if report.interventionPlan.count < 4 { throw OpenAIError.parse("研究報告 interventionPlan 少於 4") }
+        for itv in report.interventionPlan {
+            if itv.interventionId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                throw OpenAIError.parse("研究報告 interventionId 不可為空")
+            }
+            if itv.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                throw OpenAIError.parse("研究報告 intervention title 不可為空")
+            }
+            if itv.variants.filter({ !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }).count < 2 {
+                throw OpenAIError.parse("研究報告 \(itv.interventionId) variants 少於 2")
+            }
+            if itv.recoveryScript.filter({ !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }).count < 2 {
+                throw OpenAIError.parse("研究報告 \(itv.interventionId) recoveryScript 少於 2")
+            }
+        }
+
+        return report
+    }
+
     func generateHabitGuide(goal: String) async throws -> HabitGuide {
+        let researchReport = try await generateHabitResearchReport(goal: goal)
+
         // Avoid echoing user-entered cadence words that are banned in AI output.
         // We keep the original goal for UI display elsewhere, but prompt the model with a neutral phrasing.
         let sanitizedGoal = goal
@@ -751,6 +868,7 @@ struct OpenAIClient {
 
         return HabitGuide(
             goal: goal,
+            researchReport: researchReport,
             masteryDefinition: masteryDefinition,
             frictions: frictions,
             methodRoute: methodRoute,

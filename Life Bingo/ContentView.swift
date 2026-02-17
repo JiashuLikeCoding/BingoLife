@@ -1378,6 +1378,7 @@ struct HabitGuideSection: View {
     let onRefresh: () -> Void
     @State private var expandedStages: Set<Int> = []
     @State private var isRefreshing: Bool = false
+    @State private var isResearchExpanded: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -1409,16 +1410,70 @@ struct HabitGuideSection: View {
             // Only show content when not refreshing
             if !isRefreshing {
                 if let guide {
-                    VStack(alignment: .leading, spacing: 8) {
-                        ForEach(Array(guide.stages.enumerated()), id: \.element.stage) { index, stage in
-                            HabitGuideStageView(
-                                stage: stage,
-                                isCurrent: stage.stage == currentStage,
-                                isExpanded: expandedStages.contains(stage.stage),
-                                isFirst: index == 0,
-                                isLast: index == guide.stages.count - 1,
-                                onToggle: { toggleStage(stage.stage) }
-                            )
+                    VStack(alignment: .leading, spacing: 10) {
+                        if let report = guide.researchReport {
+                            DisclosureGroup(isExpanded: $isResearchExpanded) {
+                                VStack(alignment: .leading, spacing: 10) {
+                                    if !report.summary.isEmpty {
+                                        VStack(alignment: .leading, spacing: 6) {
+                                            Text("摘要")
+                                                .font(.system(size: 13, weight: .semibold))
+                                                .foregroundStyle(Theme.textPrimary)
+                                            ForEach(report.summary, id: \.self) { line in
+                                                Text("• \(line)")
+                                                    .font(.system(size: 13))
+                                                    .foregroundStyle(Theme.textSecondary)
+                                            }
+                                        }
+                                    }
+
+                                    if !report.frictionMechanisms.isEmpty {
+                                        VStack(alignment: .leading, spacing: 6) {
+                                            Text("阻力機制")
+                                                .font(.system(size: 13, weight: .semibold))
+                                                .foregroundStyle(Theme.textPrimary)
+                                            ForEach(report.frictionMechanisms, id: \.self) { line in
+                                                Text("• \(line)")
+                                                    .font(.system(size: 13))
+                                                    .foregroundStyle(Theme.textSecondary)
+                                            }
+                                        }
+                                    }
+
+                                    if !report.interventionPlan.isEmpty {
+                                        VStack(alignment: .leading, spacing: 6) {
+                                            Text("干預策略")
+                                                .font(.system(size: 13, weight: .semibold))
+                                                .foregroundStyle(Theme.textPrimary)
+                                            ForEach(report.interventionPlan) { itv in
+                                                Text("• [\(itv.interventionId)] \(itv.title)")
+                                                    .font(.system(size: 13))
+                                                    .foregroundStyle(Theme.textSecondary)
+                                            }
+                                        }
+                                    }
+                                }
+                                .padding(.top, 6)
+                            } label: {
+                                Text("研究報告（PASS 1）")
+                                    .font(Theme.Fonts.body())
+                                    .fontWeight(.semibold)
+                                    .foregroundStyle(Theme.textPrimary)
+                            }
+                            .padding(.vertical, 4)
+                        }
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            ForEach(Array(guide.stages.enumerated()), id: \.element.stage) { index, stage in
+                                HabitGuideStageView(
+                                    stage: stage,
+                                    isCurrent: stage.stage == currentStage,
+                                    isExpanded: expandedStages.contains(stage.stage),
+                                    isFirst: index == 0,
+                                    isLast: index == guide.stages.count - 1,
+                                    onToggle: { toggleStage(stage.stage) }
+                                )
+                            }
                         }
                     }
                 } else {
