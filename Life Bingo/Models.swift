@@ -158,6 +158,8 @@ struct GratitudeEntry: Identifiable, Codable, Hashable {
 
 struct HabitGuide: Codable, Hashable {
     var goal: String
+    /// STEP 0: goal normalization (ability/identity/mastery abstraction). Optional for backward compatibility.
+    var goalNormalization: GoalNormalization?
     /// PASS 1: research-first report (design rationale). Optional for backward compatibility.
     var researchReport: HabitResearchReport?
     /// What "mastery" looks like for this habit (clear, observable definition).
@@ -172,6 +174,7 @@ struct HabitGuide: Codable, Hashable {
 
     init(
         goal: String,
+        goalNormalization: GoalNormalization? = nil,
         researchReport: HabitResearchReport? = nil,
         masteryDefinition: String = "",
         frictions: [String] = [],
@@ -180,6 +183,7 @@ struct HabitGuide: Codable, Hashable {
         updatedAt: Date
     ) {
         self.goal = goal
+        self.goalNormalization = goalNormalization
         self.researchReport = researchReport
         self.masteryDefinition = masteryDefinition
         self.frictions = frictions
@@ -190,6 +194,7 @@ struct HabitGuide: Codable, Hashable {
 
     enum CodingKeys: String, CodingKey {
         case goal
+        case goalNormalization
         case researchReport
         case masteryDefinition
         case frictions
@@ -201,6 +206,7 @@ struct HabitGuide: Codable, Hashable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         goal = try container.decode(String.self, forKey: .goal)
+        goalNormalization = try container.decodeIfPresent(GoalNormalization.self, forKey: .goalNormalization)
         researchReport = try container.decodeIfPresent(HabitResearchReport.self, forKey: .researchReport)
         masteryDefinition = try container.decodeIfPresent(String.self, forKey: .masteryDefinition) ?? ""
         frictions = try container.decodeIfPresent([String].self, forKey: .frictions) ?? []
@@ -208,6 +214,20 @@ struct HabitGuide: Codable, Hashable {
         stages = try container.decode([HabitStageGuide].self, forKey: .stages)
         updatedAt = try container.decode(Date.self, forKey: .updatedAt)
     }
+}
+
+struct GoalNormalization: Codable, Hashable {
+    var step: Int
+    var needsClarification: Bool
+    var clarifyingQuestion: String
+
+    var normalizedSkill: String
+    var skillType: String
+    var identityForm: String
+    var masteryState: String
+
+    /// Sanitized goal used for downstream prompting (must not contain cadence words).
+    var goalSanitizedForDownstream: String
 }
 
 struct HabitResearchReport: Codable, Hashable {

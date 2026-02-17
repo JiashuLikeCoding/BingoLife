@@ -391,12 +391,128 @@ struct OpenAIClient {
         return responseObj.message
     }
 
-    private func generateHabitResearchReport(goal: String, previousError: String? = nil) async throws -> HabitResearchReport {
-        let sanitizedGoal = goal
-            .replacingOccurrences(of: "每天", with: "")
-            .replacingOccurrences(of: "每日", with: "")
-            .replacingOccurrences(of: "天天", with: "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+    private func generateGoalNormalization(goal: String, previousError: String? = nil) async throws -> GoalNormalization {
+        let previousErrorBlock: String = {
+            guard let previousError, !previousError.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return "" }
+            return "\n【上次輸出未通過驗證】\n\(previousError)\n請你修正後重新輸出，並確保完全符合本次的格式要求。\n"
+        }()
+
+        let prompt = """
+        你是「Behavioral Scientist + Skill Acquisition Architect + Positive Psychology Expert」。
+        你要處理任何使用者輸入的目標 goal，但此回合只允許做 STEP 0：目標正規化（抽象轉換）。
+        \(previousErrorBlock)
+
+        【硬性禁止】
+        - 禁止產生任何步驟、任務、行動建議、練習、計畫、階段名稱、bingoTasks、stages、Habit Map。
+        - 禁止使用或重複 cadence 字：每天、每日、天天（即使使用者 goal 有，也不可在輸出中出現這些字）。
+        - 禁止 KPI/連續天數/時間遞增模板語氣（例如：連續X天、每天X分鐘、3→10→30）。
+
+        【輸出格式】
+        - 只輸出「單一 JSON 物件」，不得有任何額外文字、不得 markdown、不得 code block。
+        - 若 goal 過於空泛或不可解析，仍必須輸出 JSON，但用 needsClarification:true 並在 clarifyingQuestion 問 1 個最關鍵澄清問題（仍禁止 steps/tasks）。
+
+        【你要做的事】
+        把 goal 轉換成能力本質與身份形態，並描述長期掌握狀態（可觀察、非時間、非數量、非連續天數）。
+
+        【輸出 schema】
+        {
+          "step": 0,
+          "needsClarification": false,
+          "clarifyingQuestion": "",
+          "normalizedSkill": "能力本質描述（不是行為表面；不含 cadence/KPI 語氣）",
+          "skillType": "體能 | 認知 | 情緒 | 自律 | 技術 | 混合型",
+          "identityForm": "身份形態（我是…的人）",
+          "masteryState": "掌握狀態（可觀察、可描述的行為表現；非時間、非數量、非連續天數）",
+          "goalSanitizedForDownstream": "移除 cadence/KPI 語氣後的乾淨目標字串（不可包含 每天/每日/天天）"
+        }
+
+        【使用者 goal】
+        \(goal)
+
+        只回傳 JSON。
+        """
+
+        let requestBody: [String: Any] = [
+            "model": model,
+            "input": [
+                ["role": "system", "content": "You are a helpful assistant. Respond in JSON only."],
+                ["role": "user", "content": prompt]
+            ],
+            "text": ["format": ["type": "json_object"]],
+            "max_output_tokens": 600
+        ]
+
+        var request = URLRequest(url: URL(string: "https://api.openai.com/v1/responses")!)
+        request.httpMethod = "POST"
+        request.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: requestBody, options: [])
+        request.timeoutInterval = 120
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw OpenAIError.network("無法取得回應")
+        }
+        if !(200...299).contains(http.statusCode) {
+            let message = String(data: data, encoding: .utf8) ?? "狀態碼 \(http.statusCode)"
+            throw OpenAIError.server(message)
+        }
+
+        let decoded = try JSONDecoder().decode(OpenAIResponse.self, from: data)
+        if let error = decoded.error {
+            throw OpenAIError.server(error.message)
+        }
+
+        let text = decoded.outputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, let jsonData = text.data(using: .utf8) else {
+            throw OpenAIError.parse("回應內容為空")
+        }
+
+        let normalization: GoalNormalization
+        do {
+            normalization = try JSONDecoder().decode(GoalNormalization.self, from: jsonData)
+        } catch {
+            let preview = text.prefix(400)
+            throw OpenAIError.parse("STEP0 JSON 解析失敗：\(error.localizedDescription)\npreview: \(preview)")
+        }
+
+        // STEP0 validation (strict, since it drives downstream prompts)
+        if normalization.step != 0 {
+            throw OpenAIError.parse("STEP0 step 必須為 0")
+        }
+        let banned = ["每天", "每日", "天天"]
+        let allText = [
+            normalization.clarifyingQuestion,
+            normalization.normalizedSkill,
+            normalization.skillType,
+            normalization.identityForm,
+            normalization.masteryState,
+            normalization.goalSanitizedForDownstream
+        ].joined(separator: "\n")
+        for w in banned where allText.contains(w) {
+            throw OpenAIError.parse("STEP0 輸出包含禁字：\(w)")
+        }
+
+        if normalization.needsClarification {
+            let q = normalization.clarifyingQuestion.trimmingCharacters(in: .whitespacesAndNewlines)
+            if q.isEmpty {
+                throw OpenAIError.parse("STEP0 needsClarification=true 時 clarifyingQuestion 不可為空")
+            }
+            throw OpenAIError.parse("STEP0 需要澄清：\(q)")
+        }
+
+        func nonEmpty(_ s: String) -> Bool { !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        if !nonEmpty(normalization.normalizedSkill) { throw OpenAIError.parse("STEP0 normalizedSkill 不可為空") }
+        if !nonEmpty(normalization.identityForm) { throw OpenAIError.parse("STEP0 identityForm 不可為空") }
+        if !nonEmpty(normalization.masteryState) { throw OpenAIError.parse("STEP0 masteryState 不可為空") }
+        if !nonEmpty(normalization.goalSanitizedForDownstream) { throw OpenAIError.parse("STEP0 goalSanitizedForDownstream 不可為空") }
+
+        return normalization
+    }
+
+    private func generateHabitResearchReport(goal: String, normalization: GoalNormalization, previousError: String? = nil) async throws -> HabitResearchReport {
+        let sanitizedGoal = normalization.goalSanitizedForDownstream.trimmingCharacters(in: .whitespacesAndNewlines)
+        let safeGoal = sanitizedGoal.isEmpty ? goal : sanitizedGoal
 
         let previousErrorBlock: String = {
             guard let previousError, !previousError.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return "" }
@@ -405,8 +521,14 @@ struct OpenAIClient {
 
         let prompt = """
         你是行為科學導向的習慣養成研究員與產品設計師。
-        請先為「\(sanitizedGoal.isEmpty ? goal : sanitizedGoal)」寫一份研究報告（PASS 1），用繁體中文，並輸出 JSON。
+        請先為「\(safeGoal)」寫一份研究報告（PASS 1），用繁體中文，並輸出 JSON。
         \(previousErrorBlock)
+
+        【STEP 0 正規化結果（僅供理解，不要照抄 cadence/KPI）】
+        - normalizedSkill：\(normalization.normalizedSkill)
+        - skillType：\(normalization.skillType)
+        - identityForm：\(normalization.identityForm)
+        - masteryState：\(normalization.masteryState)
 
         【硬規則】
         - 使用者輸入可能包含「每天/每日/天天」，但你在任何輸出欄位都不得重複這些字樣。
@@ -548,9 +670,23 @@ struct OpenAIClient {
     }
 
     func generateHabitGuide(goal: String) async throws -> HabitGuide {
+        let normalization: GoalNormalization
+        do {
+            normalization = try await generateGoalNormalization(goal: goal)
+        } catch {
+            // One self-fix retry: feed the validation error back to STEP0.
+            let errText: String
+            if let e = error as? OpenAIError {
+                errText = String(describing: e)
+            } else {
+                errText = error.localizedDescription
+            }
+            normalization = try await generateGoalNormalization(goal: goal, previousError: errText)
+        }
+
         let researchReport: HabitResearchReport
         do {
-            researchReport = try await generateHabitResearchReport(goal: goal)
+            researchReport = try await generateHabitResearchReport(goal: goal, normalization: normalization)
         } catch {
             // One self-fix retry: feed the validation error back to PASS 1.
             let errText: String
@@ -559,16 +695,12 @@ struct OpenAIClient {
             } else {
                 errText = error.localizedDescription
             }
-            researchReport = try await generateHabitResearchReport(goal: goal, previousError: errText)
+            researchReport = try await generateHabitResearchReport(goal: goal, normalization: normalization, previousError: errText)
         }
 
         // Avoid echoing user-entered cadence words that are banned in AI output.
         // We keep the original goal for UI display elsewhere, but prompt the model with a neutral phrasing.
-        let sanitizedGoal = goal
-            .replacingOccurrences(of: "每天", with: "")
-            .replacingOccurrences(of: "每日", with: "")
-            .replacingOccurrences(of: "天天", with: "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let sanitizedGoal = normalization.goalSanitizedForDownstream.trimmingCharacters(in: .whitespacesAndNewlines)
 
         func extractTargetMinutes(from text: String) -> Int? {
             let patterns = ["(\\d{1,3})\\s*分鐘", "(\\d{1,3})\\s*分", "(\\d{1,3})\\s*minutes", "(\\d{1,3})\\s*mins", "(\\d{1,3})\\s*min"]
@@ -942,6 +1074,7 @@ struct OpenAIClient {
 
         return HabitGuide(
             goal: goal,
+            goalNormalization: normalization,
             researchReport: researchReport,
             masteryDefinition: masteryDefinition,
             frictions: frictions,
