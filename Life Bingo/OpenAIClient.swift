@@ -730,7 +730,6 @@ struct OpenAIClient {
           - stage 3: B1..Bn
           - stage 4: R1..Rn
         - 【PASS2 追溯要求】每個 step 必須包含 derivedFromInterventionIds（陣列，至少 1 個），而且只能使用 PASS 1 的 interventionId（例如 I1/I2...）。
-        - 【PASS3 追溯要求】每個 bingoTask（如果你有輸出）也必須包含 derivedFromInterventionIds（至少 1 個），並且是 PASS1 interventionId。
         - 每個 step 必須包含 requiredBingoCount（1–3，代表完成幾個 Bingo 任務先算完成該 step）。
         - 每個 step 的 bingoTasks 至少 1 個，且全都是細動作（可直接做，不需要用戶再決定做咩）。
 
@@ -1090,21 +1089,11 @@ struct OpenAIClient {
                     throw OpenAIError.parse("step \(sidRaw) bingoTasks 至少 1 個")
                 }
 
-                // PASS3 traceability (already required in prompt): tasks should also cite PASS1 interventions.
-                if !allowedInterventionIds.isEmpty {
-                    for t in tasksField {
-                        let derivedT = (t.derivedFromInterventionIds ?? [])
-                            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                            .filter { !$0.isEmpty }
-                        if derivedT.isEmpty {
-                            throw OpenAIError.parse("bingoTask 缺少 derivedFromInterventionIds（step \(sidRaw)）")
-                        }
-                        let unknownT = derivedT.filter { !allowedInterventionIds.contains($0) }
-                        if !unknownT.isEmpty {
-                            throw OpenAIError.parse("bingoTask derivedFromInterventionIds 無效（step \(sidRaw)）：\(unknownT.joined(separator: ","))")
-                        }
-                    }
-                }
+                // PASS3 will enforce task-level traceability later.
+                // For PASS2, we only require step-level traceability to reduce failure rate.
+                _ = tasksField
+                _ = allowedInterventionIds
+
 
                 // requiredBingoCount: optional, but if provided it must be 1...3
                 if let req = step.requiredBingoCount {
