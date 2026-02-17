@@ -280,6 +280,8 @@ struct HabitGuideStep: Identifiable, Codable, Hashable {
     let id: UUID
     /// Stable step identifier for mapping Bingo tasks ↔ habit map (e.g. S1,S2... P1... L1... B1... R1...).
     var stepId: String
+    /// PASS2 traceability: which PASS1 interventions this step is derived from.
+    var derivedFromInterventionIds: [String]
     var title: String
     var duration: String
     var fallback: String
@@ -300,6 +302,7 @@ struct HabitGuideStep: Identifiable, Codable, Hashable {
     enum CodingKeys: String, CodingKey {
         case id
         case stepId
+        case derivedFromInterventionIds
         case title
         case duration
         case fallback
@@ -313,6 +316,7 @@ struct HabitGuideStep: Identifiable, Codable, Hashable {
     init(
         id: UUID,
         stepId: String,
+        derivedFromInterventionIds: [String] = [],
         title: String,
         duration: String,
         fallback: String,
@@ -324,6 +328,7 @@ struct HabitGuideStep: Identifiable, Codable, Hashable {
     ) {
         self.id = id
         self.stepId = stepId
+        self.derivedFromInterventionIds = derivedFromInterventionIds
         self.title = title
         self.duration = duration
         self.fallback = fallback
@@ -338,6 +343,9 @@ struct HabitGuideStep: Identifiable, Codable, Hashable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
         stepId = try container.decodeIfPresent(String.self, forKey: .stepId) ?? ""
+        derivedFromInterventionIds = (try container.decodeIfPresent([String].self, forKey: .derivedFromInterventionIds) ?? [])
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
         title = try container.decodeIfPresent(String.self, forKey: .title) ?? ""
         duration = try container.decodeIfPresent(String.self, forKey: .duration) ?? ""
         fallback = try container.decodeIfPresent(String.self, forKey: .fallback) ?? ""
@@ -362,6 +370,7 @@ struct HabitGuideStep: Identifiable, Codable, Hashable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(id, forKey: .id)
         try container.encode(stepId, forKey: .stepId)
+        try container.encode(derivedFromInterventionIds, forKey: .derivedFromInterventionIds)
         try container.encode(title, forKey: .title)
         try container.encode(duration, forKey: .duration)
         try container.encode(fallback, forKey: .fallback)

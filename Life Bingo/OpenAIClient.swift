@@ -589,9 +589,23 @@ struct OpenAIClient {
             return "\n【重要：目標時長硬性要求】\n- 目標包含 \(targetMinutes) 分鐘：stage 4（扎根）必須至少有 1 個核心行為 step，並且該 step 的 duration 欄位必須明確寫「\(targetMinutes) 分鐘」（阿拉伯數字），不要用『半小時』這類模糊寫法。\n"
         }()
 
+        let interventionCatalog: String = {
+            let items = researchReport.interventionPlan.map { itv in
+                let title = itv.title.trimmingCharacters(in: .whitespacesAndNewlines)
+                let mech = itv.mechanism.trimmingCharacters(in: .whitespacesAndNewlines)
+                let reduce = itv.howItReducesResistance.trimmingCharacters(in: .whitespacesAndNewlines)
+                return "- \(itv.interventionId): \(title)｜機制：\(mech)｜降低阻力：\(reduce)"
+            }
+            return items.joined(separator: "\n")
+        }()
+
         let prompt = """
-        你是習慣地圖設計師。請為「\(sanitizedGoal.isEmpty ? goal : sanitizedGoal)」生成一份 5 階段的 Habit Map。
+        你是習慣地圖設計師。請為「\(sanitizedGoal.isEmpty ? goal : sanitizedGoal)」生成一份 5 階段的 Habit Map（PASS 2）。
         注意：使用者輸入的目標可能包含「每天/每日/天天」等字樣，但你在任何輸出欄位都不得重複這些字樣；請用不含頻率詞的描述來寫所有步驟與任務。
+
+        【PASS 1 研究報告（interventionPlan）】
+        你只能使用以下干預策略來設計 steps / bingoTasks；不准憑空新增新的策略或口號。
+        \(interventionCatalog)
 
         【第一：熟練定義（必須具體可觀察）】
         禁止：抽象描述如「自然地做」「成為生活一部份」「養成習慣」「持續執行」。
@@ -680,6 +694,7 @@ struct OpenAIClient {
               "steps": [
                 {
                   "stepId": "S1",
+                  "derivedFromInterventionIds": ["I1"],
                   "title": "具體行動（做 XXX / 選定 XXX / 把 XXX 放好）",
                   "duration": "30 秒",
                   "fallback": "更小版本",
@@ -714,6 +729,8 @@ struct OpenAIClient {
           - stage 2: L1..Ln
           - stage 3: B1..Bn
           - stage 4: R1..Rn
+        - 【PASS2 追溯要求】每個 step 必須包含 derivedFromInterventionIds（陣列，至少 1 個），而且只能使用 PASS 1 的 interventionId（例如 I1/I2...）。
+        - 【PASS3 追溯要求】每個 bingoTask（如果你有輸出）也必須包含 derivedFromInterventionIds（至少 1 個），並且是 PASS1 interventionId。
         - 每個 step 必須包含 requiredBingoCount（1–3，代表完成幾個 Bingo 任務先算完成該 step）。
         - 每個 step 的 bingoTasks 至少 1 個，且全都是細動作（可直接做，不需要用戶再決定做咩）。
 
@@ -867,7 +884,7 @@ struct OpenAIClient {
             .filter { !$0.isEmpty }
 
         // Strict validation: no local fallback templates.
-        try Self.validateHabitGuideResponse(goal: goal, masteryDefinition: masteryDefinition, frictions: frictions, methodRoute: methodRoute, response: responseModel)
+        try Self.validateHabitGuideResponse(goal: goal, researchReport: researchReport, masteryDefinition: masteryDefinition, frictions: frictions, methodRoute: methodRoute, response: responseModel)
 
         let stages = responseModel.stages
             .sorted { $0.stage < $1.stage }
@@ -903,9 +920,14 @@ struct OpenAIClient {
                         }
                     }()
 
+                    let derivedFrom = (step.derivedFromInterventionIds ?? [])
+                        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                        .filter { !$0.isEmpty }
+
                     return HabitGuideStep(
                         id: UUID(),
                         stepId: trimmedStepId,
+                        derivedFromInterventionIds: derivedFrom,
                         title: trimmedTitle,
                         duration: trimmedDuration,
                         fallback: trimmedFallback,
@@ -932,6 +954,7 @@ struct OpenAIClient {
 
     private static func validateHabitGuideResponse(
         goal: String,
+        researchReport: HabitResearchReport?,
         masteryDefinition: String,
         frictions: [String],
         methodRoute: [String],
@@ -1000,6 +1023,11 @@ struct OpenAIClient {
         }
         let targetMinutes = extractTargetMinutes(from: goal)
         var stage4CombinedText: String = ""
+        let allowedInterventionIds: Set<String> = {
+            guard let researchReport else { return [] }
+            return Set(researchReport.interventionPlan.map { $0.interventionId.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })
+        }()
+
         for s in stages {
             if s.steps.isEmpty {
                 throw OpenAIError.parse("stage \(s.stage) steps 至少 1 個")
@@ -1008,6 +1036,20 @@ struct OpenAIClient {
                 let sidRaw = (step.stepId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
                 if sidRaw.isEmpty {
                     throw OpenAIError.parse("缺少 stepId")
+                }
+
+                // PASS2: steps must be traceable to PASS1 interventions.
+                if !allowedInterventionIds.isEmpty {
+                    let derived = (step.derivedFromInterventionIds ?? [])
+                        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                        .filter { !$0.isEmpty }
+                    if derived.isEmpty {
+                        throw OpenAIError.parse("step \(sidRaw) 缺少 derivedFromInterventionIds")
+                    }
+                    let unknown = derived.filter { !allowedInterventionIds.contains($0) }
+                    if !unknown.isEmpty {
+                        throw OpenAIError.parse("step \(sidRaw) derivedFromInterventionIds 無效：\(unknown.joined(separator: ","))")
+                    }
                 }
                 let expectedPrefix: String = {
                     switch s.stage {
@@ -1042,9 +1084,26 @@ struct OpenAIClient {
                     }
                 }
 
-                let tasks = (step.bingoTasks?.tasks ?? []).map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+                let tasksField = step.bingoTasks?.tasks ?? []
+                let tasks = tasksField.map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
                 if tasks.isEmpty {
                     throw OpenAIError.parse("step \(sidRaw) bingoTasks 至少 1 個")
+                }
+
+                // PASS3 traceability (already required in prompt): tasks should also cite PASS1 interventions.
+                if !allowedInterventionIds.isEmpty {
+                    for t in tasksField {
+                        let derivedT = (t.derivedFromInterventionIds ?? [])
+                            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                            .filter { !$0.isEmpty }
+                        if derivedT.isEmpty {
+                            throw OpenAIError.parse("bingoTask 缺少 derivedFromInterventionIds（step \(sidRaw)）")
+                        }
+                        let unknownT = derivedT.filter { !allowedInterventionIds.contains($0) }
+                        if !unknownT.isEmpty {
+                            throw OpenAIError.parse("bingoTask derivedFromInterventionIds 無效（step \(sidRaw)）：\(unknownT.joined(separator: ","))")
+                        }
+                    }
                 }
 
                 // requiredBingoCount: optional, but if provided it must be 1...3
@@ -1144,6 +1203,8 @@ struct BingoTasksField: Codable {
 
 struct HabitGuideStepResponse: Codable {
     var stepId: String?
+    /// PASS2 traceability: which PASS1 interventions this step is derived from.
+    var derivedFromInterventionIds: [String]?
     var title: String
     var duration: String
     var fallback: String
