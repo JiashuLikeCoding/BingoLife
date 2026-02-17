@@ -413,9 +413,9 @@ struct OpenAIClient {
         - 你要做的是「心理工程／行為設計」，不是把時間切細遞增。
         - 內容要具體，可落地；禁止用口號充數。
 
-        【輸出格式】
+        【輸出格式（只能輸出這個 JSON；不要額外文字）】
         {
-          "summary": ["..."],
+          "summary": ["...", "...", "...", "..."],
           "userArchetypeHypotheses": ["..."],
           "frictionMechanisms": ["..."],
           "failureModes": ["..."],
@@ -432,8 +432,8 @@ struct OpenAIClient {
           ]
         }
 
-        【內容要求】
-        - summary：4–8 行，講清楚你點樣設計，點樣避免三日後停。
+        【內容要求（務必照「陣列元素數量」來寫；不可把多行合併成同一個字串）】
+        - summary：必須是陣列，且元素數量 4–8 個；每個元素是一句完整句子（建議 12–28 字），不要在同一個元素內用換行塞多句。
         - frictionMechanisms：至少 4 點，每點要帶具體例子（例如：下班決策疲勞→坐低就唔想郁）。
         - failureModes：至少 3 點，寫成具體情境。
         - interventionPlan：至少 4 條干預策略。
@@ -481,7 +481,7 @@ struct OpenAIClient {
             throw OpenAIError.parse("回應內容為空")
         }
 
-        let report: HabitResearchReport
+        var report: HabitResearchReport
         do {
             report = try JSONDecoder().decode(HabitResearchReport.self, from: jsonData)
         } catch {
@@ -490,6 +490,19 @@ struct OpenAIClient {
         }
 
         // Basic validation to ensure PASS 1 is not empty / not template.
+        // Some models may accidentally put multi-line content into a single array element.
+        // We salvage by splitting the first element into lines, but only if that yields >= 4 non-empty items.
+        if report.summary.count < 4, report.summary.count == 1 {
+            let merged = report.summary[0]
+            let lines = merged
+                .split(whereSeparator: { $0 == "\n" || $0 == "\r" })
+                .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            if lines.count >= 4 {
+                report.summary = Array(lines.prefix(8))
+            }
+        }
+
         if report.summary.count < 4 { throw OpenAIError.parse("研究報告 summary 太短（需要 4–8 行）") }
         if report.frictionMechanisms.count < 4 { throw OpenAIError.parse("研究報告 frictionMechanisms 少於 4") }
         if report.failureModes.count < 3 { throw OpenAIError.parse("研究報告 failureModes 少於 3") }
