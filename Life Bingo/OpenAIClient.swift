@@ -1456,9 +1456,20 @@ struct OpenAIClient {
                 .joined(separator: "\n")
         }()
 
-        let prompt = """
+        func requestPASS2(previousError: String?) async throws -> HabitGuideResponse {
+            let previousErrorBlock: String = {
+                guard let previousError, !previousError.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return "" }
+                return """
+【上次輸出未通過驗證】
+\(previousError)
+請你只修正錯誤點並重新輸出完整 JSON；不要省略任何欄位。
+"""
+            }()
+
+            let prompt = """
         你是習慣地圖設計師。請為「\(sanitizedGoal.isEmpty ? goal : sanitizedGoal)」生成一份 5 階段的 Habit Map（PASS 2）。
         注意：使用者輸入的目標可能包含「每天/每日/天天」等字樣，但你在任何輸出欄位都不得重複這些字樣；請用不含頻率詞的描述來寫所有步驟與任務。
+        \(previousErrorBlock)
 
         【PASS 1 研究報告（interventionPlan）】
         你只能使用以下干預策略來設計 steps / bingoTasks；不准憑空新增新的策略或口號。
@@ -1482,100 +1493,51 @@ struct OpenAIClient {
         禁止：「時間不夠」「懶」「不自律」這種標籤式描述。
         必須：具體描述「什麼情境/什麼東西/什麼想法」阻礙行動。
         範例（好）：
-        - 「想到要換運動服，就覺得麻煩」（阻力：怕麻煩的感覺）
-        - 「坐在沙發上後，就不想動」（阻力：舒適區的吸引力）
-        - 「打開運動影片，看不懂要怎麼做」（阻力：不知道第一步）
+        - 「下班腦袋好攰，坐低就唔想再起身」
+        - 「落雨就覺得出門麻煩，會拖延到算」
 
-        【第三：五階段與步驟（最重要）】
-        必須包含 5 個 STAGE（stage=0..4）。每個 STAGE 的 steps 數量可以彈性（建議 3–8 步），但每個 stage 至少要有 1 步。
-
-        【Stage 劃分定義（必須照做，並在輸出中反映）】
-        - stage 0 種子：只做「接觸/準備/環境布置」，幾乎零阻力。
-          例：把物品放到視線內、設定提醒、把工具準備好。
-        - stage 1 發芽：一段「超短實作」（至少 30 秒），讓行為第一次做得出。
-          例：做 30–90 秒的動作、走到門口並站 30 秒。
-        - stage 2 長葉：可重複的「短流程」（仍然低阻力），減少每次決策。
-          例：固定 3–8 分鐘流程（熱身→做→收尾）。
-        - stage 3 開花：在不同情境仍做得到（忙、累、天氣差、被打斷），要有替代版本。
-          例：下雨版/加班版/出差版的替代步。
-        - stage 4 扎根：中斷後能回到軌道（自我修復），並且更少需要提醒。
-          例：錯過一次後的「回歸步驟」+ 環境已固定。
         \(targetMinutesRule)
 
-        **STEP 的規則（每一步都是一個具體行動）：**
-        禁止：
-        - 「培養觸發點」「建立儀式」「克服阻力」—— 這些是目標，不是行動
-        - 「Day 1: ...」格式，直接寫行動
-        - 必須是「做 XXX」「選定 XXX」「把 XXX 放好」「打開 XXX」
-        範例（好）：
-        - 「選定明日運動時間」
-        - 「把運動服放在床邊」
-        - 「下載並打開運動 App」
-        - 「穿好運動襪」
-        - 「做 3 下深蹲」
+        【第三：方法路線（methodRoute）】
+        methodRoute 是一段「設計路線」的條列；每點 15–40 字。
+        必須至少 3 點，並且必須包含以下 3 個標籤行（每個至少 1 行）：
+          - 漸進策略：
+          - 替代方案：
+          - 中斷後回復：
+          （觸發情境：可選）
 
-        **BINGO TASKS 的規則（比 step 更細的動作）：**
-        每個 step 產生 bingoTasks（數量彈性，但至少 1 個；必須直接可執行）。
-
-        【重要：不同 stage 的 bingoTasks 尺度規則】
-        - stage 0（種子）：bingoTasks 可以很細（例如「打開/點擊/設定」類），因為重點是降低阻力。
-        - stage 1–4（發芽/長葉/開花/扎根）：
-          - 每個 bingoTask 必須是「至少 30 秒」的一段動作
-          - 必須包含「身體動作/實際行為」（例如：走、拿、穿、做、整理、把某物放到某處、實際完成一小段流程）
-          - 盡量避免只用「打開/點擊/設定」當作任務（除非目標本身就是數位/整理類）
-
-        禁止：「換心態」「給自己鼓勵」「深呼吸」——除非目標本身是情緒相關。
-
-        範例：
-        - stage 0（種子）可以：
-          - 「打開手機日曆」
-          - 「選定明天一個具體時間」
-          - 「設定提醒」
-        - stage 1（發芽）更應該：
-          - 「穿上運動鞋並走到門口」
-          - 「原地踏步 60 秒」
-          - 「做 5 次深蹲」
-
-        【嚴格禁止（再次強調）】
-        - 「做一個很小的步驟」「開始行動」「嘗試一下」—— 廢話
-        - 「閉眼呼吸」「對自己說肯定句」—— 無關任務
-        - 任何包含「每天」「每日」「天天」的句子
-
-        【輸出 JSON 格式】
+        【第四：Habit Map 輸出要求】
+        只輸出 JSON，格式如下：
         {
-          "masteryDefinition": "具體可觀察的熟練狀態（不要 KPI）",
-          "frictions": ["具體阻力1", "具體阻力2", "具體阻力3"],
-          "methodRoute": [
-            "漸進策略：用 3–6 句描述從最小版本 → 目標行為的漸進路線（可操作行為）",
-            "替代方案：列出太累/雨天/時間少時的低配版本（可操作行為）",
-            "中斷後回復：錯過一次後，下一次如何回到最小版本（可操作行為；不追 KPI）"
-          ],
+          "masteryDefinition": "...",
+          "frictions": ["..."],
+          "methodRoute": ["..."],
           "stages": [
             {
               "stage": 0,
-              "stageName": "種子",
+              "name": "種子",
               "steps": [
                 {
                   "stepId": "S1",
+                  "title": "...",
+                  "duration": "...",
+                  "fallback": "...",
+                  "category": "...",
                   "derivedFromInterventionIds": ["I1"],
+                  "requiredBingoCount": 1,
                   "behaviorRef": "B1",
                   "capabilityRef": "C1",
                   "leverageRef": "L1",
-                  "title": "（必須是 behaviorRef 的可執行子版本；不可另起爐灶）",
-                  "duration": "30 秒",
-                  "fallback": "更小版本",
-                  "category": "行為/環境/心理",
-                  "requiredBingoCount": 2,
                   "bingoTasks": {
                     "tasks": [
                       {
                         "taskId": "S1-T1",
                         "mapsToStep": "S1",
                         "derivedFromInterventionIds": ["I1"],
-                        "text": "≤60 秒的具體動作（必須屬於 behaviorRef）",
+                        "text": "...",
                         "durationSec": 45,
-                        "observable": "完成標誌",
-                        "successProbability": 0.8
+                        "observable": "...",
+                        "successProbability": 0.75
                       }
                     ]
                   }
@@ -1585,21 +1547,8 @@ struct OpenAIClient {
           ]
         }
 
-        【第一：研究分析（必須先做，然後才寫 steps）】
-        你要先想清楚「用戶為何做不到」以及「點樣先會養成」，並把分析落地成可執行策略：
-        - frictions：至少 3 點，且每點要具體（要有情境/原因，例如「下班太累」「換衫麻煩」「落雨冇地方」），禁止只寫「沒時間/沒動力」呢種泛句。
-        - methodRoute：至少 3 點（可多）；每點必須是「可操作行為」。**為了避免漏項，請用固定標籤格式**，並且至少各出現一次：
-          - 「漸進策略：...」
-          - 「替代方案：...」（太累/雨天/時間少時的低配版本）
-          - 「中斷後回復：...」（錯過後如何回到最小版本；不追 KPI）
-          - 「觸發情境：...」可寫可不寫（建議但不必填）
-
-        【硬性輸出驗證（你必須滿足）】
-        - methodRoute 至少 3 點（越完整越好），且每點是可操作行為（禁止抽象口號）。為避免漏寫，methodRoute 內必須至少各有一點以以下字首開頭：
-          - 漸進策略：
-          - 替代方案：
-          - 中斷後回復：
-          （觸發情境：可選）
+        【硬規則】
+        - 禁止產生抽象步驟名（例如：培養觸發點、建立儀式、克服阻力、開始行動）。
         - stages 必須剛好 5 個（stage=0..4），每個 stage 至少 1 個 steps（可彈性）。
         - 每個 step 必須有 stepId，且 stepId 必須跟 stage 對應：
           - stage 0: S1..Sn
@@ -1611,147 +1560,175 @@ struct OpenAIClient {
         - 每個 step 必須包含 requiredBingoCount（1–3，代表完成幾個 Bingo 任務先算完成該 step）。
         - 每個 step 必須包含 behaviorRef/capabilityRef/leverageRef，且它們必須對應到 STEP 3 behavior catalog（不可亂填）。
         - 每個 step 的 bingoTasks 至少 1 個，且全都是細動作（可直接做，不需要用戶再決定做咩）。
-        - bingoTasks 必須是物件陣列（不要用純字串陣列），並且每個 task 的 derivedFromInterventionIds 只能使用 PASS1 interventionId。
+        - bingoTasks 必須是 {"tasks":[...]}（不要用純字串陣列），並且每個 task 的 derivedFromInterventionIds 只能使用 PASS1 interventionId。
+        - 禁止輸出空的 tasks 陣列；每個 step 至少 1 個 task。
+        - 你輸出前必須自我檢查：逐個 step 確保 bingoTasks.tasks 長度 >= 1。
 
         只回傳 JSON，不要有任何其他文字。
         """
 
-        let requestBody: [String: Any] = [
-            "model": model,
-            "input": [
-                [
-                    "role": "system",
-                    "content": "You are a helpful assistant. Respond in JSON only."
+            let requestBody: [String: Any] = [
+                "model": model,
+                "input": [
+                    [
+                        "role": "system",
+                        "content": "You are a helpful assistant. Respond in JSON only."
+                    ],
+                    [
+                        "role": "user",
+                        "content": prompt
+                    ]
                 ],
-                [
-                    "role": "user",
-                    "content": prompt
-                ]
-            ],
-            "text": [
-                "format": [
-                    "type": "json_object"
-                ]
-            ],
-            "max_output_tokens": 3500
-        ]
+                "text": [
+                    "format": [
+                        "type": "json_object"
+                    ]
+                ],
+                "max_output_tokens": 3500
+            ]
 
-        var request = URLRequest(url: URL(string: "https://api.openai.com/v1/responses")!)
-        request.httpMethod = "POST"
-        request.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONSerialization.data(withJSONObject: requestBody, options: [])
-        request.timeoutInterval = 120
+            var request = URLRequest(url: URL(string: "https://api.openai.com/v1/responses")!)
+            request.httpMethod = "POST"
+            request.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            request.addValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try JSONSerialization.data(withJSONObject: requestBody, options: [])
+            request.timeoutInterval = 120
 
-        let (data, response): (Data, URLResponse)
-        do {
-            (data, response) = try await URLSession.shared.data(for: request)
-        } catch {
-            // Common on iOS when app backgrounds / network switches mid-request.
-            if let urlError = error as? URLError,
-               urlError.code == .networkConnectionLost || urlError.code == .timedOut {
-                // One quick retry.
-                try? await Task.sleep(nanoseconds: 600_000_000) // 0.6s
+            let (data, response): (Data, URLResponse)
+            do {
                 (data, response) = try await URLSession.shared.data(for: request)
-            } else {
-                throw error
+            } catch {
+                if let urlError = error as? URLError,
+                   urlError.code == .networkConnectionLost || urlError.code == .timedOut {
+                    try? await Task.sleep(nanoseconds: 600_000_000)
+                    (data, response) = try await URLSession.shared.data(for: request)
+                } else {
+                    throw error
+                }
             }
-        }
-        guard let http = response as? HTTPURLResponse else {
-            throw OpenAIError.network("無法取得回應")
-        }
-        if !(200...299).contains(http.statusCode) {
-            let message = String(data: data, encoding: .utf8) ?? "狀態碼 \(http.statusCode)"
-            throw OpenAIError.server(message)
-        }
-
-        // Extract output text robustly from multiple possible OpenAI response shapes.
-        var text: String
-        do {
-            // 1) Preferred: decode using our typed shape.
-            let decoded = try JSONDecoder().decode(OpenAIResponse.self, from: data)
-            if let error = decoded.error {
-                throw OpenAIError.server(error.message)
+            guard let http = response as? HTTPURLResponse else {
+                throw OpenAIError.network("無法取得回應")
             }
-            text = decoded.outputText.trimmingCharacters(in: .whitespacesAndNewlines)
-        } catch {
-            // 2) Fallback: parse as generic JSON (responses/chat.completions variants).
-            let raw = String(data: data, encoding: .utf8) ?? ""
-
-            // If API returned an error payload, surface it.
-            if let obj = try? JSONSerialization.jsonObject(with: data, options: []),
-               let dict = obj as? [String: Any],
-               let err = dict["error"] as? [String: Any],
-               let msg = err["message"] as? String {
-                throw OpenAIError.server(msg)
+            if !(200...299).contains(http.statusCode) {
+                let message = String(data: data, encoding: .utf8) ?? "狀態碼 \(http.statusCode)"
+                throw OpenAIError.server(message)
             }
 
-            // Try to extract output_text from Responses API: { output: [ { content: [ { type, text } ] } ] }
-            if let obj = try? JSONSerialization.jsonObject(with: data, options: []),
-               let dict = obj as? [String: Any] {
-                if let outputText = dict["output_text"] as? String {
-                    text = outputText.trimmingCharacters(in: .whitespacesAndNewlines)
-                } else if let output = dict["output"] as? [[String: Any]] {
-                    var chunks: [String] = []
-                    for item in output {
-                        if let content = item["content"] as? [[String: Any]] {
-                            for c in content {
-                                let type = (c["type"] as? String) ?? ""
-                                if type == "output_text" || type == "text" {
-                                    if let t = c["text"] as? String { chunks.append(t) }
+            var text: String
+            do {
+                let decoded = try JSONDecoder().decode(OpenAIResponse.self, from: data)
+                if let error = decoded.error {
+                    throw OpenAIError.server(error.message)
+                }
+                text = decoded.outputText.trimmingCharacters(in: .whitespacesAndNewlines)
+            } catch {
+                let raw = String(data: data, encoding: .utf8) ?? ""
+                if let obj = try? JSONSerialization.jsonObject(with: data, options: []),
+                   let dict = obj as? [String: Any],
+                   let err = dict["error"] as? [String: Any],
+                   let msg = err["message"] as? String {
+                    throw OpenAIError.server(msg)
+                }
+
+                if let obj = try? JSONSerialization.jsonObject(with: data, options: []),
+                   let dict = obj as? [String: Any] {
+                    if let outputText = dict["output_text"] as? String {
+                        text = outputText.trimmingCharacters(in: .whitespacesAndNewlines)
+                    } else if let output = dict["output"] as? [[String: Any]] {
+                        var chunks: [String] = []
+                        for item in output {
+                            if let content = item["content"] as? [[String: Any]] {
+                                for c in content {
+                                    let type = (c["type"] as? String) ?? ""
+                                    if type == "output_text" || type == "text" {
+                                        if let t = c["text"] as? String { chunks.append(t) }
+                                    }
                                 }
                             }
                         }
-                    }
-                    text = chunks.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-                } else if let choices = dict["choices"] as? [[String: Any]] {
-                    // Chat Completions style
-                    let first = choices.first
-                    if let message = first?["message"] as? [String: Any],
-                       let content = message["content"] as? String {
-                        text = content.trimmingCharacters(in: .whitespacesAndNewlines)
-                    } else if let delta = first?["delta"] as? [String: Any],
-                              let content = delta["content"] as? String {
-                        text = content.trimmingCharacters(in: .whitespacesAndNewlines)
+                        text = chunks.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+                    } else if let choices = dict["choices"] as? [[String: Any]] {
+                        let first = choices.first
+                        if let message = first?["message"] as? [String: Any],
+                           let content = message["content"] as? String {
+                            text = content.trimmingCharacters(in: .whitespacesAndNewlines)
+                        } else if let delta = first?["delta"] as? [String: Any],
+                                  let content = delta["content"] as? String {
+                            text = content.trimmingCharacters(in: .whitespacesAndNewlines)
+                        } else {
+                            text = ""
+                        }
                     } else {
                         text = ""
                     }
                 } else {
                     text = ""
                 }
-            } else {
-                text = ""
-            }
 
-            if text.isEmpty {
-                // Last resort: try to grab the first JSON object in raw text.
-                if let start = raw.firstIndex(of: "{"), let end = raw.lastIndex(of: "}"), start < end {
-                    text = String(raw[start...end]).trimmingCharacters(in: .whitespacesAndNewlines)
+                if text.isEmpty {
+                    if let start = raw.firstIndex(of: "{"), let end = raw.lastIndex(of: "}"), start < end {
+                        text = String(raw[start...end]).trimmingCharacters(in: .whitespacesAndNewlines)
+                    }
+                }
+
+                if text.isEmpty {
+                    let preview = raw.prefix(400)
+                    print("OpenAI raw response (preview): \(preview)")
+                    throw OpenAIError.parse("cannot parse response (preview): \(preview)")
                 }
             }
 
-            if text.isEmpty {
-                let preview = raw.prefix(400)
-                print("OpenAI raw response (preview): \(preview)")
-                throw OpenAIError.parse("cannot parse response (preview): \(preview)")
+            guard !text.isEmpty, let jsonData = text.data(using: .utf8) else {
+                throw OpenAIError.parse("回應內容為空")
+            }
+
+            do {
+                return try JSONDecoder().decode(HabitGuideResponse.self, from: jsonData)
+            } catch {
+                let preview = text.prefix(400)
+                print("AI HabitGuide JSON parsing failed: \(error)")
+                print("Raw response (preview): \(preview)")
+                throw OpenAIError.parse("JSON 解析失敗：\(error.localizedDescription)\npreview: \(preview)")
             }
         }
 
-        guard !text.isEmpty, let jsonData = text.data(using: .utf8) else {
-            throw OpenAIError.parse("回應內容為空")
-        }
-        
-        // Try to decode, if fails, throw to trigger fallback
         let responseModel: HabitGuideResponse
         do {
-            responseModel = try JSONDecoder().decode(HabitGuideResponse.self, from: jsonData)
-        } catch {
-            // Log the raw response for debugging
-            let preview = text.prefix(400)
-            print("AI HabitGuide JSON parsing failed: \(error)")
-            print("Raw response (preview): \(preview)")
-            throw OpenAIError.parse("JSON 解析失敗：\(error.localizedDescription)\npreview: \(preview)")
+            let first = try await requestPASS2(previousError: nil)
+            do {
+                try Self.validateHabitGuideResponse(
+                    goal: goal,
+                    researchReport: researchReport,
+                    skillModel: skillModel,
+                    habitArchitecture: habitArchitecture,
+                    masteryDefinition: (first.masteryDefinition ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
+                    frictions: (first.frictions ?? []).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty },
+                    methodRoute: (first.methodRoute ?? []).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty },
+                    response: first
+                )
+                responseModel = first
+            } catch {
+                let errText: String
+                if let e = error as? OpenAIError {
+                    errText = String(describing: e)
+                } else {
+                    errText = error.localizedDescription
+                }
+                let second = try await requestPASS2(previousError: errText)
+                try Self.validateHabitGuideResponse(
+                    goal: goal,
+                    researchReport: researchReport,
+                    skillModel: skillModel,
+                    habitArchitecture: habitArchitecture,
+                    masteryDefinition: (second.masteryDefinition ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
+                    frictions: (second.frictions ?? []).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty },
+                    methodRoute: (second.methodRoute ?? []).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty },
+                    response: second
+                )
+                responseModel = second
+            }
         }
+
 
         let masteryDefinition = (responseModel.masteryDefinition ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2111,15 +2088,26 @@ struct BingoTasksField: Codable {
         self.tasks = tasks
     }
 
+    private enum CodingKeys: String, CodingKey {
+        case tasks
+    }
+
     init(from decoder: Decoder) throws {
+        // New shape: { "tasks": [ ... ] }
+        if let keyed = try? decoder.container(keyedBy: CodingKeys.self),
+           let obj = try? keyed.decode([BingoTaskResponse].self, forKey: .tasks) {
+            self.tasks = obj
+            return
+        }
+
+        // Legacy shapes: [ { ... } ] or ["..."]
         let container = try decoder.singleValueContainer()
         if let objTasks = try? container.decode([BingoTaskResponse].self) {
             self.tasks = objTasks
             return
         }
-        // Backward compatibility: allow [String]
         let legacy = (try? container.decode([String].self)) ?? []
-        self.tasks = legacy.enumerated().map { idx, t in
+        self.tasks = legacy.enumerated().map { _, t in
             BingoTaskResponse(
                 taskId: nil,
                 mapsToStep: nil,
