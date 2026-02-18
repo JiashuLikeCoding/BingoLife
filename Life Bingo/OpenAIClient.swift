@@ -2168,16 +2168,37 @@ struct OpenAIClient {
                 do {
                     return try JSONDecoder().decode(HabitGuideResponse.self, from: data)
                 } catch {
-                    // Salvage: some models output a flat {"steps":[...]} object (missing stages).
-                    // We try to decode and regroup by stepId prefix (S/P/L/B/R).
-                    struct FlatResponse: Decodable {
+                    // Salvage: models sometimes output malformed top-level shapes.
+                    // We try a few common variants and regroup by stepId prefix (S/P/L/B/R).
+                    struct FlatStepsResponse: Decodable {
                         var masteryDefinition: String?
                         var frictions: [String]?
                         var methodRoute: [String]?
                         var steps: [HabitGuideStepResponse]
                     }
+                    struct StagesAsStepsResponse: Decodable {
+                        var masteryDefinition: String?
+                        var frictions: [String]?
+                        var methodRoute: [String]?
+                        var stages: [HabitGuideStepResponse]
+                    }
 
-                    let flat = try JSONDecoder().decode(FlatResponse.self, from: data)
+                    let flatSteps: [HabitGuideStepResponse]
+                    let md: String?
+                    let fr: [String]?
+                    let mr: [String]?
+                    if let flat = try? JSONDecoder().decode(FlatStepsResponse.self, from: data) {
+                        flatSteps = flat.steps
+                        md = flat.masteryDefinition
+                        fr = flat.frictions
+                        mr = flat.methodRoute
+                    } else {
+                        let weird = try JSONDecoder().decode(StagesAsStepsResponse.self, from: data)
+                        flatSteps = weird.stages
+                        md = weird.masteryDefinition
+                        fr = weird.frictions
+                        mr = weird.methodRoute
+                    }
 
                     func normalizeStepId(_ raw: String?) -> String? {
                         guard let raw else { return nil }
@@ -2202,7 +2223,7 @@ struct OpenAIClient {
                     let nameForStage: [Int: String] = [0: "種子", 1: "發芽", 2: "長葉", 3: "開花", 4: "扎根"]
                     var buckets: [Int: [HabitGuideStepResponse]] = [:]
 
-                    for var s in flat.steps {
+                    for var s in flatSteps {
                         let sid = normalizeStepId(s.stepId)
                         s.stepId = sid
                         if let sid, let idx = stageIndex(for: sid) {
@@ -2215,9 +2236,9 @@ struct OpenAIClient {
                     }
 
                     return HabitGuideResponse(
-                        masteryDefinition: flat.masteryDefinition,
-                        frictions: flat.frictions,
-                        methodRoute: flat.methodRoute,
+                        masteryDefinition: md,
+                        frictions: fr,
+                        methodRoute: mr,
                         stages: stages
                     )
                 }
