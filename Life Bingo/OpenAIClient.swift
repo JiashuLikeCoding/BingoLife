@@ -950,8 +950,9 @@ struct OpenAIClient {
 
         【硬性禁止】
         - 禁止時間遞增模板（3→10→30）。
-        - 禁止輸出 cadence 字：每天、每日、天天。
+        - 禁止輸出 cadence 字：每天、每日、天天（注意：連「舉例」都唔可以出現）。
         - 禁止 KPI/連續天數/時間作為衡量。
+        - 你輸出前必須自我檢查：全文搜尋「每天」「每日」「天天」三個字，確保 0 次出現。
 
         【輸入】
         goal（sanitize 後）：\(safeGoal)
@@ -1449,13 +1450,24 @@ struct OpenAIClient {
         do {
             habitArchitecture = try await generateHabitArchitecture(normalization: normalization, skillModel: skillModel, capabilityStages: capabilityStages)
         } catch {
-            let errText: String
+            // Retry STEP3 (up to 2 additional tries) because banned-word slips are common and cheap to fix.
+            let errText1: String
             if let e = error as? OpenAIError {
-                errText = String(describing: e)
+                errText1 = String(describing: e)
             } else {
-                errText = error.localizedDescription
+                errText1 = error.localizedDescription
             }
-            habitArchitecture = try await generateHabitArchitecture(normalization: normalization, skillModel: skillModel, capabilityStages: capabilityStages, previousError: errText)
+            do {
+                habitArchitecture = try await generateHabitArchitecture(normalization: normalization, skillModel: skillModel, capabilityStages: capabilityStages, previousError: errText1)
+            } catch {
+                let errText2: String
+                if let e = error as? OpenAIError {
+                    errText2 = String(describing: e)
+                } else {
+                    errText2 = error.localizedDescription
+                }
+                habitArchitecture = try await generateHabitArchitecture(normalization: normalization, skillModel: skillModel, capabilityStages: capabilityStages, previousError: errText2)
+            }
         }
 
         let reinforcementUnits: [ReinforcementUnit]
