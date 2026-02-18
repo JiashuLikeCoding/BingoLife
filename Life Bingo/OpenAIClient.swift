@@ -1084,10 +1084,6 @@ struct OpenAIClient {
 
     private func generateReinforcementUnits(normalization: GoalNormalization, skillModel: SkillModelReport, habitArchitecture: HabitArchitecture, previousError: String? = nil) async throws -> [ReinforcementUnit] {
         let safeGoal = normalization.goalSanitizedForDownstream.trimmingCharacters(in: .whitespacesAndNewlines)
-        let previousErrorBlock: String = {
-            guard let previousError, !previousError.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return "" }
-            return "\n【上次輸出未通過驗證】\n\(previousError)\n請你修正後重新輸出，並確保完全符合本次的格式要求。\n"
-        }()
 
         // Build capability catalog + identity hints from STEP3 behaviors (so STEP4 tasks can be diverse but still goal-adjacent).
         let capabilityCatalog: String = skillModel.requiredCapabilities
@@ -1119,7 +1115,157 @@ struct OpenAIClient {
             return lines.joined(separator: "\n")
         }()
 
-        let prompt = """
+        let capIds: [String] = skillModel.requiredCapabilities.map { $0.capabilityId }
+        let capIdSet = Set(capIds)
+        let requiredFormsOrdered: [String] = ["身體動作型", "語言輸出型", "環境改造型", "微決策型", "社交/外部承諾型"]
+        let requiredFormsSet = Set(requiredFormsOrdered)
+        let expectedUnitCount = capIds.count * requiredFormsOrdered.count
+
+        struct Envelope: Decodable {
+            let step: Int
+            let reinforcementUnits: [ReinforcementUnit]
+        }
+
+        func unitKey(_ u: ReinforcementUnit) -> String {
+            let cap = (u.capabilityRef ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let form = (u.form ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            return "\(cap)|\(form)"
+        }
+
+        func scanBanned(_ units: [ReinforcementUnit]) throws {
+            let banned = ["每天", "每日", "天天"]
+            let allText = units.flatMap { u in
+                let cap = u.capabilityRef ?? ""
+                let form = u.form ?? ""
+                return u.bingoTasks.map { t in "\(cap) \(form) \(t.taskId) \(t.text) \(t.observable) \(t.reinforcesCapability) \(t.reinforcesIdentity)" }
+            }.joined(separator: "\n")
+            for w in banned where allText.contains(w) { throw OpenAIError.parse("STEP4 輸出包含禁字：\(w)") }
+        }
+
+        func validateUnits(_ units: [ReinforcementUnit], strictCount: Bool) throws {
+            if units.isEmpty { throw OpenAIError.parse("STEP4 reinforcementUnits 不可為空") }
+            if strictCount, units.count != expectedUnitCount {
+                throw OpenAIError.parse("STEP4 reinforcementUnits 數量必須為 \(expectedUnitCount)（capabilities=\(capIds.count) × forms=\(requiredFormsOrdered.count)），目前：\(units.count)")
+            }
+
+            var formsByCap: [String: Set<String>] = [:]
+            var coveredCaps: Set<String> = []
+            var seenKeys: Set<String> = []
+
+            for unit in units {
+                let capRef = (unit.capabilityRef ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                if capRef.isEmpty { throw OpenAIError.parse("STEP4 capabilityRef 不可為空") }
+                if !capIdSet.contains(capRef) { throw OpenAIError.parse("STEP4 capabilityRef 引用不存在 capabilityId：\(capRef)") }
+                coveredCaps.insert(capRef)
+
+                let form = (unit.form ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                if form.isEmpty { throw OpenAIError.parse("STEP4 \(capRef) form 不可為空") }
+                if !requiredFormsSet.contains(form) { throw OpenAIError.parse("STEP4 \(capRef) form 不在允許列表：\(form)") }
+
+                let key = "\(capRef)|\(form)"
+                if seenKeys.contains(key) { throw OpenAIError.parse("STEP4 \(capRef) form 重複：\(form)") }
+                seenKeys.insert(key)
+
+                var formSet = formsByCap[capRef, default: []]
+                formSet.insert(form)
+                formsByCap[capRef] = formSet
+
+                if unit.bingoTasks.isEmpty { throw OpenAIError.parse("STEP4 \(capRef) [\(form)] bingoTasks 不可為空") }
+                for t in unit.bingoTasks {
+                    if t.taskId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { throw OpenAIError.parse("STEP4 taskId 不可為空") }
+                    if t.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { throw OpenAIError.parse("STEP4 \(capRef) text 不可為空") }
+                    if t.observable.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { throw OpenAIError.parse("STEP4 \(capRef) observable 不可為空") }
+                    if t.reinforcesCapability.trimmingCharacters(in: .whitespacesAndNewlines) != capRef {
+                        throw OpenAIError.parse("STEP4 \(capRef) reinforcesCapability 必須等於 capabilityRef（得到：\(t.reinforcesCapability)）")
+                    }
+                    if t.reinforcesIdentity.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        throw OpenAIError.parse("STEP4 \(capRef) reinforcesIdentity 不可為空")
+                    }
+                }
+            }
+
+            if strictCount {
+                if coveredCaps.count < capIdSet.count {
+                    throw OpenAIError.parse("STEP4 reinforcementUnits 必須覆蓋所有 capabilities（缺少：\(capIdSet.subtracting(coveredCaps).joined(separator: ", "))）")
+                }
+                for cap in capIdSet {
+                    let forms = formsByCap[cap] ?? []
+                    if forms != requiredFormsSet {
+                        let missing = requiredFormsSet.subtracting(forms).joined(separator: ", ")
+                        let extra = forms.subtracting(requiredFormsSet).joined(separator: ", ")
+                        throw OpenAIError.parse("STEP4 \(cap) 必須剛好包含 5 種形式；缺少：\(missing.isEmpty ? "無" : missing)；多出：\(extra.isEmpty ? "無" : extra)")
+                    }
+                }
+            }
+        }
+
+        func missingPairs(_ units: [ReinforcementUnit]) -> [(cap: String, form: String)] {
+            var present: Set<String> = []
+            for u in units {
+                let cap = (u.capabilityRef ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                let form = (u.form ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                if cap.isEmpty || form.isEmpty { continue }
+                present.insert("\(cap)|\(form)")
+            }
+            var out: [(String, String)] = []
+            for cap in capIds {
+                for form in requiredFormsOrdered {
+                    let key = "\(cap)|\(form)"
+                    if !present.contains(key) {
+                        out.append((cap, form))
+                    }
+                }
+            }
+            return out
+        }
+
+        func requestSTEP4(prompt: String, maxTokens: Int) async throws -> [ReinforcementUnit] {
+            let requestBody: [String: Any] = [
+                "model": model,
+                "input": [
+                    ["role": "system", "content": "You are a helpful assistant. Respond in JSON only."],
+                    ["role": "user", "content": prompt]
+                ],
+                "text": ["format": ["type": "json_object"]],
+                "max_output_tokens": maxTokens
+            ]
+
+            var request = URLRequest(url: URL(string: "https://api.openai.com/v1/responses")!)
+            request.httpMethod = "POST"
+            request.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            request.addValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try JSONSerialization.data(withJSONObject: requestBody, options: [])
+            request.timeoutInterval = 120
+
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse else { throw OpenAIError.network("無法取得回應") }
+            if !(200...299).contains(http.statusCode) {
+                let message = String(data: data, encoding: .utf8) ?? "狀態碼 \(http.statusCode)"
+                throw OpenAIError.server(message)
+            }
+            let decoded = try JSONDecoder().decode(OpenAIResponse.self, from: data)
+            if let error = decoded.error { throw OpenAIError.server(error.message) }
+            let text = decoded.outputText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty, let jsonData = text.data(using: .utf8) else { throw OpenAIError.parse("STEP4 回應內容為空") }
+
+            let env: Envelope
+            do {
+                env = try JSONDecoder().decode(Envelope.self, from: jsonData)
+            } catch {
+                let preview = text.prefix(400)
+                throw OpenAIError.parse("STEP4 JSON 解析失敗：\(error.localizedDescription)\npreview: \(preview)")
+            }
+            if env.step != 4 { throw OpenAIError.parse("STEP4 step 必須為 4") }
+            return env.reinforcementUnits
+        }
+
+        // Prompt 1: full generation.
+        let previousErrorBlock: String = {
+            guard let previousError, !previousError.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return "" }
+            return "\n【上次輸出未通過驗證】\n\(previousError)\n請你修正後重新輸出，並確保完全符合本次的格式要求。\n"
+        }()
+
+        let basePrompt = """
         你是「Behavioral Scientist + Skill Acquisition Architect」。
         你要處理 STEP 4 — REINFORCEMENT COMPILATION（強化單位）。
         你要為每個 capability 生成 5 種不同形式的強化單位（不得重複形式）。
@@ -1182,118 +1328,87 @@ struct OpenAIClient {
         只回傳 JSON。
         """
 
-        struct Envelope: Decodable {
-            let step: Int
-            let reinforcementUnits: [ReinforcementUnit]
-        }
+        // Generate + "patch missing" (補齊式生成) to avoid transient partial outputs.
+        var merged: [ReinforcementUnit] = []
 
-        let requestBody: [String: Any] = [
-            "model": model,
-            "input": [
-                ["role": "system", "content": "You are a helpful assistant. Respond in JSON only."],
-                ["role": "user", "content": prompt]
-            ],
-            "text": ["format": ["type": "json_object"]],
-            "max_output_tokens": 1800
-        ]
-
-        var request = URLRequest(url: URL(string: "https://api.openai.com/v1/responses")!)
-        request.httpMethod = "POST"
-        request.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONSerialization.data(withJSONObject: requestBody, options: [])
-        request.timeoutInterval = 120
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse else { throw OpenAIError.network("無法取得回應") }
-        if !(200...299).contains(http.statusCode) {
-            let message = String(data: data, encoding: .utf8) ?? "狀態碼 \(http.statusCode)"
-            throw OpenAIError.server(message)
-        }
-        let decoded = try JSONDecoder().decode(OpenAIResponse.self, from: data)
-        if let error = decoded.error { throw OpenAIError.server(error.message) }
-        let text = decoded.outputText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, let jsonData = text.data(using: .utf8) else { throw OpenAIError.parse("STEP4 回應內容為空") }
-
-        let env: Envelope
         do {
-            env = try JSONDecoder().decode(Envelope.self, from: jsonData)
+            merged = try await requestSTEP4(prompt: basePrompt, maxTokens: 1800)
+            try scanBanned(merged)
+            try validateUnits(merged, strictCount: false)
         } catch {
-            let preview = text.prefix(400)
-            throw OpenAIError.parse("STEP4 JSON 解析失敗：\(error.localizedDescription)\npreview: \(preview)")
-        }
-        if env.step != 4 { throw OpenAIError.parse("STEP4 step 必須為 4") }
-
-        let banned = ["每天", "每日", "天天"]
-        let allText = env.reinforcementUnits.flatMap { u in
-            let cap = u.capabilityRef ?? ""
-            let form = u.form ?? ""
-            return u.bingoTasks.map { t in "\(cap) \(form) \(t.taskId) \(t.text) \(t.observable) \(t.reinforcesCapability) \(t.reinforcesIdentity)" }
-        }.joined(separator: "\n")
-        for w in banned where allText.contains(w) { throw OpenAIError.parse("STEP4 輸出包含禁字：\(w)") }
-
-        let capIds = Set(skillModel.requiredCapabilities.map { $0.capabilityId })
-        if env.reinforcementUnits.isEmpty { throw OpenAIError.parse("STEP4 reinforcementUnits 不可為空") }
-
-        let requiredForms: Set<String> = ["身體動作型", "語言輸出型", "環境改造型", "微決策型", "社交/外部承諾型"]
-
-        // Validate: cover every capability with exactly the 5 distinct forms.
-        // Expected count is exactly capabilities * 5 (one unit per form).
-        let expectedUnitCount = capIds.count * requiredForms.count
-        if env.reinforcementUnits.count != expectedUnitCount {
-            throw OpenAIError.parse("STEP4 reinforcementUnits 數量必須為 \(expectedUnitCount)（capabilities=\(capIds.count) × forms=\(requiredForms.count)），目前：\(env.reinforcementUnits.count)")
+            throw error
         }
 
-        var formsByCap: [String: Set<String>] = [:]
-        var coveredCaps: Set<String> = []
+        // Patch passes: ask only for missing (capabilityRef, form) pairs and then merge.
+        for _ in 0..<3 {
+            let missing = missingPairs(merged)
+            if missing.isEmpty { break }
 
-        for unit in env.reinforcementUnits {
-            let capRef = (unit.capabilityRef ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            if capRef.isEmpty { throw OpenAIError.parse("STEP4 capabilityRef 不可為空") }
-            if !capIds.contains(capRef) { throw OpenAIError.parse("STEP4 capabilityRef 引用不存在 capabilityId：\(capRef)") }
-            coveredCaps.insert(capRef)
+            let missingLines = missing.map { "- \($0.cap)｜\($0.form)" }.joined(separator: "\n")
+            let existingKeys = merged.map { unitKey($0) }.joined(separator: ", ")
 
-            let form = (unit.form ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            if form.isEmpty { throw OpenAIError.parse("STEP4 \(capRef) form 不可為空") }
-            if !requiredForms.contains(form) { throw OpenAIError.parse("STEP4 \(capRef) form 不在允許列表：\(form)") }
+            let patchPrompt = """
+            你是「Behavioral Scientist + Skill Acquisition Architect」。
+            你正在補齊 STEP4 reinforcementUnits。
 
-            var formSet = formsByCap[capRef, default: []]
-            if formSet.contains(form) {
-                throw OpenAIError.parse("STEP4 \(capRef) form 重複：\(form)")
-            }
-            formSet.insert(form)
-            formsByCap[capRef] = formSet
+            【硬性禁止】
+            - 禁止輸出 cadence 字：每天、每日、天天。
+            - 只生成缺少的 (capabilityRef, form) 單位；不要重複已存在的。
 
-            if unit.bingoTasks.isEmpty { throw OpenAIError.parse("STEP4 \(capRef) [\(form)] bingoTasks 不可為空") }
-            for t in unit.bingoTasks {
-                if t.taskId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { throw OpenAIError.parse("STEP4 taskId 不可為空") }
-                if t.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { throw OpenAIError.parse("STEP4 \(capRef) text 不可為空") }
-                if t.observable.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { throw OpenAIError.parse("STEP4 \(capRef) observable 不可為空") }
-                if t.reinforcesCapability.trimmingCharacters(in: .whitespacesAndNewlines) != capRef {
-                    throw OpenAIError.parse("STEP4 \(capRef) reinforcesCapability 必須等於 capabilityRef（得到：\(t.reinforcesCapability)）")
+            goal（sanitize 後）：\(safeGoal)
+            identityForm：\(normalization.identityForm)
+            capabilities：
+            \(capabilityCatalog)
+
+            forms（固定五種）：\(requiredFormsOrdered.joined(separator: " / "))
+
+            已存在的 keys（capabilityRef|form）：\(existingKeys)
+
+            你必須只生成以下缺少的組合（每行 1 個 unit，且 form 必須完全一致）：
+            \(missingLines)
+
+            【輸出格式】只輸出 JSON：
+            {
+              "step": 4,
+              "reinforcementUnits": [
+                {
+                  "capabilityRef": "C1",
+                  "form": "身體動作型",
+                  "bingoTasks": [
+                    {
+                      "taskId": "C1-PHYS-1",
+                      "text": "≤60秒具體行為",
+                      "observable": "完成標誌",
+                      "reinforcesCapability": "C1",
+                      "reinforcesIdentity": "完成代表我是..."
+                    }
+                  ]
                 }
-                if t.reinforcesIdentity.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    throw OpenAIError.parse("STEP4 \(capRef) reinforcesIdentity 不可為空")
+              ]
+            }
+
+            只回傳 JSON。
+            """
+
+            let patchUnits = try await requestSTEP4(prompt: patchPrompt, maxTokens: 1200)
+            try scanBanned(patchUnits)
+            try validateUnits(patchUnits, strictCount: false)
+
+            var byKey: [String: ReinforcementUnit] = Dictionary(uniqueKeysWithValues: merged.map { (unitKey($0), $0) })
+            for u in patchUnits {
+                let k = unitKey(u)
+                if byKey[k] == nil {
+                    byKey[k] = u
                 }
             }
+            merged = Array(byKey.values)
         }
 
-        // Ensure every capability is covered.
-        if coveredCaps.count < capIds.count {
-            throw OpenAIError.parse("STEP4 reinforcementUnits 必須覆蓋所有 capabilities（缺少：\(capIds.subtracting(coveredCaps).joined(separator: ", "))）")
-        }
+        // Final strict validation.
+        try scanBanned(merged)
+        try validateUnits(merged, strictCount: true)
 
-        // Ensure every capability has the 5 forms.
-        for cap in capIds {
-            let forms = formsByCap[cap] ?? []
-            if forms != requiredForms {
-                let missing = requiredForms.subtracting(forms).joined(separator: ", ")
-                let extra = forms.subtracting(requiredForms).joined(separator: ", ")
-                throw OpenAIError.parse("STEP4 \(cap) 必須剛好包含 5 種形式；缺少：\(missing.isEmpty ? "無" : missing)；多出：\(extra.isEmpty ? "無" : extra)")
-            }
-        }
-
-        return env.reinforcementUnits
+        return merged
     }
 
     private func generateRecoverySystem(normalization: GoalNormalization, researchReport: HabitResearchReport, previousError: String? = nil) async throws -> RecoverySystem {
