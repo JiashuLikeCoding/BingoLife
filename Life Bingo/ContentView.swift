@@ -1382,6 +1382,8 @@ struct HabitGuideSection: View {
     @State private var isSkillModelExpanded: Bool = false
     @State private var isCapabilityStagesExpanded: Bool = false
     @State private var isBehaviorCompilationExpanded: Bool = false
+    @State private var isReinforcementExpanded: Bool = false
+    @State private var isRecoveryExpanded: Bool = false
     @State private var isResearchExpanded: Bool = false
 
     var body: some View {
@@ -1576,6 +1578,70 @@ struct HabitGuideSection: View {
                                 .padding(.top, 6)
                             } label: {
                                 Text("行為編譯（STEP 3）")
+                                    .font(Theme.Fonts.body())
+                                    .fontWeight(.semibold)
+                                    .foregroundStyle(Theme.textPrimary)
+                            }
+                            .padding(.vertical, 4)
+                        }
+
+                        if let units = guide.reinforcementUnits, !units.isEmpty {
+                            DisclosureGroup(isExpanded: $isReinforcementExpanded) {
+                                VStack(alignment: .leading, spacing: 10) {
+                                    ForEach(units, id: \.behaviorRef) { unit in
+                                        VStack(alignment: .leading, spacing: 6) {
+                                            Text("Behavior \(unit.behaviorRef)")
+                                                .font(.system(size: 13, weight: .semibold))
+                                                .foregroundStyle(Theme.textPrimary)
+                                            ForEach(unit.bingoTasks, id: \.taskId) { t in
+                                                Text("• [\(t.taskId)] \(t.text)（cap: \(t.reinforcesCapability)）")
+                                                    .font(.system(size: 13))
+                                                    .foregroundStyle(Theme.textSecondary)
+                                            }
+                                        }
+                                    }
+                                }
+                                .padding(.top, 6)
+                            } label: {
+                                Text("強化單位（STEP 4）")
+                                    .font(Theme.Fonts.body())
+                                    .fontWeight(.semibold)
+                                    .foregroundStyle(Theme.textPrimary)
+                            }
+                            .padding(.vertical, 4)
+                        }
+
+                        if let recovery = guide.recoverySystem {
+                            DisclosureGroup(isExpanded: $isRecoveryExpanded) {
+                                VStack(alignment: .leading, spacing: 10) {
+                                    VStack(alignment: .leading, spacing: 6) {
+                                        Text("最小回復")
+                                            .font(.system(size: 13, weight: .semibold))
+                                            .foregroundStyle(Theme.textPrimary)
+                                        Text(recovery.microRecovery)
+                                            .font(.system(size: 13))
+                                            .foregroundStyle(Theme.textSecondary)
+                                    }
+                                    VStack(alignment: .leading, spacing: 6) {
+                                        Text("身份保護")
+                                            .font(.system(size: 13, weight: .semibold))
+                                            .foregroundStyle(Theme.textPrimary)
+                                        Text(recovery.identityProtection)
+                                            .font(.system(size: 13))
+                                            .foregroundStyle(Theme.textSecondary)
+                                    }
+                                    VStack(alignment: .leading, spacing: 6) {
+                                        Text("重置規則")
+                                            .font(.system(size: 13, weight: .semibold))
+                                            .foregroundStyle(Theme.textPrimary)
+                                        Text(recovery.resetRule)
+                                            .font(.system(size: 13))
+                                            .foregroundStyle(Theme.textSecondary)
+                                    }
+                                }
+                                .padding(.top, 6)
+                            } label: {
+                                Text("中斷保護（STEP 5）")
                                     .font(Theme.Fonts.body())
                                     .fontWeight(.semibold)
                                     .foregroundStyle(Theme.textPrimary)

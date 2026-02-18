@@ -1081,6 +1081,243 @@ struct OpenAIClient {
         return env.habitArchitecture
     }
 
+    private func generateReinforcementUnits(normalization: GoalNormalization, skillModel: SkillModelReport, habitArchitecture: HabitArchitecture, previousError: String? = nil) async throws -> [ReinforcementUnit] {
+        let safeGoal = normalization.goalSanitizedForDownstream.trimmingCharacters(in: .whitespacesAndNewlines)
+        let previousErrorBlock: String = {
+            guard let previousError, !previousError.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return "" }
+            return "\n【上次輸出未通過驗證】\n\(previousError)\n請你修正後重新輸出，並確保完全符合本次的格式要求。\n"
+        }()
+
+        let behaviorsCatalog: String = habitArchitecture.stages
+            .flatMap { st in st.behaviors }
+            .map { b in
+                "- \(b.behaviorId): \(b.title)｜cap=\(b.capabilityRef)｜lev=\(b.leverageRef)｜identity=\(b.identityImpact)"
+            }
+            .joined(separator: "\n")
+
+        let prompt = """
+        你是「Behavioral Scientist + Skill Acquisition Architect」。
+        你要處理 STEP 4 — REINFORCEMENT COMPILATION（強化單位）。
+        為每個 behavior 生成 Bingo 強化單位。
+        \(previousErrorBlock)
+
+        【硬性禁止】
+        - 禁止輸出 cadence 字：每天、每日、天天。
+        - 禁止新增新邏輯/新策略/新行為；只能把已存在的 behaviors 轉成更小的強化單位。
+
+        【輸入】
+        goal（sanitize 後）：\(safeGoal)
+        behaviors（不可新增，只可引用 behaviorId）：
+        \(behaviorsCatalog)
+
+        【規則】
+        - 每個 reinforcementUnit 必須對應一個已存在的 behaviorId（behaviorRef）。
+        - 每個 bingoTask ≤60秒或一個完整動作循環。
+        - 每個 bingoTask 必須強化該 behavior 的 capabilityRef（reinforcesCapability）。
+        - 每個 bingoTask 必須強化該 behavior 的 identityImpact（reinforcesIdentity）。
+        - 不得新增新邏輯。
+
+        【輸出】
+        只輸出 JSON：
+        {
+          "step": 4,
+          "reinforcementUnits": [
+            {
+              "behaviorRef": "B1",
+              "bingoTasks": [
+                {
+                  "taskId": "B1-T1",
+                  "text": "≤60秒具體行為",
+                  "observable": "完成標誌",
+                  "reinforcesCapability": "C1",
+                  "reinforcesIdentity": "完成代表我是..."
+                }
+              ]
+            }
+          ]
+        }
+
+        只回傳 JSON。
+        """
+
+        struct Envelope: Decodable {
+            let step: Int
+            let reinforcementUnits: [ReinforcementUnit]
+        }
+
+        let requestBody: [String: Any] = [
+            "model": model,
+            "input": [
+                ["role": "system", "content": "You are a helpful assistant. Respond in JSON only."],
+                ["role": "user", "content": prompt]
+            ],
+            "text": ["format": ["type": "json_object"]],
+            "max_output_tokens": 1800
+        ]
+
+        var request = URLRequest(url: URL(string: "https://api.openai.com/v1/responses")!)
+        request.httpMethod = "POST"
+        request.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: requestBody, options: [])
+        request.timeoutInterval = 120
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw OpenAIError.network("無法取得回應") }
+        if !(200...299).contains(http.statusCode) {
+            let message = String(data: data, encoding: .utf8) ?? "狀態碼 \(http.statusCode)"
+            throw OpenAIError.server(message)
+        }
+        let decoded = try JSONDecoder().decode(OpenAIResponse.self, from: data)
+        if let error = decoded.error { throw OpenAIError.server(error.message) }
+        let text = decoded.outputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, let jsonData = text.data(using: .utf8) else { throw OpenAIError.parse("STEP4 回應內容為空") }
+
+        let env: Envelope
+        do {
+            env = try JSONDecoder().decode(Envelope.self, from: jsonData)
+        } catch {
+            let preview = text.prefix(400)
+            throw OpenAIError.parse("STEP4 JSON 解析失敗：\(error.localizedDescription)\npreview: \(preview)")
+        }
+        if env.step != 4 { throw OpenAIError.parse("STEP4 step 必須為 4") }
+
+        let banned = ["每天", "每日", "天天"]
+        let allText = env.reinforcementUnits.flatMap { u in
+            u.bingoTasks.map { t in "\(u.behaviorRef) \(t.taskId) \(t.text) \(t.observable) \(t.reinforcesCapability) \(t.reinforcesIdentity)" }
+        }.joined(separator: "\n")
+        for w in banned where allText.contains(w) { throw OpenAIError.parse("STEP4 輸出包含禁字：\(w)") }
+
+        let behaviorIds = Set(habitArchitecture.stages.flatMap { $0.behaviors.map { $0.behaviorId } })
+        let capIds = Set(skillModel.requiredCapabilities.map { $0.capabilityId })
+        if env.reinforcementUnits.isEmpty { throw OpenAIError.parse("STEP4 reinforcementUnits 不可為空") }
+
+        var covered: Set<String> = []
+        for unit in env.reinforcementUnits {
+            let ref = unit.behaviorRef.trimmingCharacters(in: .whitespacesAndNewlines)
+            if ref.isEmpty { throw OpenAIError.parse("STEP4 behaviorRef 不可為空") }
+            if !behaviorIds.contains(ref) { throw OpenAIError.parse("STEP4 behaviorRef 引用不存在 behaviorId：\(ref)") }
+            covered.insert(ref)
+            if unit.bingoTasks.isEmpty { throw OpenAIError.parse("STEP4 \(ref) bingoTasks 不可為空") }
+            for t in unit.bingoTasks {
+                if t.taskId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { throw OpenAIError.parse("STEP4 taskId 不可為空") }
+                if t.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { throw OpenAIError.parse("STEP4 \(ref) text 不可為空") }
+                if t.observable.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { throw OpenAIError.parse("STEP4 \(ref) observable 不可為空") }
+                if !capIds.contains(t.reinforcesCapability) { throw OpenAIError.parse("STEP4 reinforcesCapability 引用不存在 capabilityId：\(t.reinforcesCapability)") }
+            }
+        }
+
+        // Ensure every behavior has at least one reinforcement unit.
+        if covered.count < behaviorIds.count {
+            throw OpenAIError.parse("STEP4 reinforcementUnits 必須覆蓋所有 behaviors（缺少：\(behaviorIds.subtracting(covered).joined(separator: ", "))）")
+        }
+
+        return env.reinforcementUnits
+    }
+
+    private func generateRecoverySystem(normalization: GoalNormalization, researchReport: HabitResearchReport, previousError: String? = nil) async throws -> RecoverySystem {
+        let safeGoal = normalization.goalSanitizedForDownstream.trimmingCharacters(in: .whitespacesAndNewlines)
+        let previousErrorBlock: String = {
+            guard let previousError, !previousError.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return "" }
+            return "\n【上次輸出未通過驗證】\n\(previousError)\n請你修正後重新輸出，並確保完全符合本次的格式要求。\n"
+        }()
+
+        let fr = researchReport.frictionMechanisms.prefix(4).map { "- \($0)" }.joined(separator: "\n")
+        let fm = researchReport.failureModes.prefix(3).map { "- \($0)" }.joined(separator: "\n")
+
+        let prompt = """
+        你是「Behavioral Scientist + Recovery Coach」。
+        你要處理 STEP 5 — RECOVERY ENGINE（中斷保護）。
+        \(previousErrorBlock)
+
+        【硬性禁止】
+        - 禁止輸出 cadence 字：每天、每日、天天。
+        - 禁止 KPI/連續天數。
+
+        【輸入】
+        goal（sanitize 後）：\(safeGoal)
+        identityForm：\(normalization.identityForm)
+        masteryState：\(normalization.masteryState)
+
+        PASS1 研究提示（失敗模式/阻力）：
+        阻力機制：
+        \(fr)
+        失敗模式：
+        \(fm)
+
+        【輸出】
+        只輸出 JSON：
+        {
+          "step": 5,
+          "recoverySystem": {
+            "microRecovery": "最小能力維持行為",
+            "identityProtection": "避免身份崩塌機制",
+            "resetRule": "中斷後如何重新回到能力軌道"
+          }
+        }
+
+        【要求】
+        - microRecovery：一個低摩擦、可立即做的維持行為（不是口號）
+        - identityProtection：一句話/一個機制，避免把中斷解讀成『我不行』
+        - resetRule：明確規則：中斷後下一次怎樣回到最小版本（不追 KPI、不補做）
+
+        只回傳 JSON。
+        """
+
+        struct Envelope: Decodable {
+            let step: Int
+            let recoverySystem: RecoverySystem
+        }
+
+        let requestBody: [String: Any] = [
+            "model": model,
+            "input": [
+                ["role": "system", "content": "You are a helpful assistant. Respond in JSON only."],
+                ["role": "user", "content": prompt]
+            ],
+            "text": ["format": ["type": "json_object"]],
+            "max_output_tokens": 600
+        ]
+
+        var request = URLRequest(url: URL(string: "https://api.openai.com/v1/responses")!)
+        request.httpMethod = "POST"
+        request.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: requestBody, options: [])
+        request.timeoutInterval = 120
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw OpenAIError.network("無法取得回應") }
+        if !(200...299).contains(http.statusCode) {
+            let message = String(data: data, encoding: .utf8) ?? "狀態碼 \(http.statusCode)"
+            throw OpenAIError.server(message)
+        }
+        let decoded = try JSONDecoder().decode(OpenAIResponse.self, from: data)
+        if let error = decoded.error { throw OpenAIError.server(error.message) }
+        let text = decoded.outputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, let jsonData = text.data(using: .utf8) else { throw OpenAIError.parse("STEP5 回應內容為空") }
+
+        let env: Envelope
+        do {
+            env = try JSONDecoder().decode(Envelope.self, from: jsonData)
+        } catch {
+            let preview = text.prefix(400)
+            throw OpenAIError.parse("STEP5 JSON 解析失敗：\(error.localizedDescription)\npreview: \(preview)")
+        }
+        if env.step != 5 { throw OpenAIError.parse("STEP5 step 必須為 5") }
+
+        let banned = ["每天", "每日", "天天"]
+        let allText = "\(env.recoverySystem.microRecovery)\n\(env.recoverySystem.identityProtection)\n\(env.recoverySystem.resetRule)"
+        for w in banned where allText.contains(w) { throw OpenAIError.parse("STEP5 輸出包含禁字：\(w)") }
+
+        func nonEmpty(_ s: String) -> Bool { !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        if !nonEmpty(env.recoverySystem.microRecovery) { throw OpenAIError.parse("STEP5 microRecovery 不可為空") }
+        if !nonEmpty(env.recoverySystem.identityProtection) { throw OpenAIError.parse("STEP5 identityProtection 不可為空") }
+        if !nonEmpty(env.recoverySystem.resetRule) { throw OpenAIError.parse("STEP5 resetRule 不可為空") }
+
+        return env.recoverySystem
+    }
+
     func generateHabitGuide(goal: String) async throws -> HabitGuide {
         let normalization: GoalNormalization
         do {
@@ -1147,6 +1384,32 @@ struct OpenAIClient {
                 errText = error.localizedDescription
             }
             habitArchitecture = try await generateHabitArchitecture(normalization: normalization, skillModel: skillModel, capabilityStages: capabilityStages, previousError: errText)
+        }
+
+        let reinforcementUnits: [ReinforcementUnit]
+        do {
+            reinforcementUnits = try await generateReinforcementUnits(normalization: normalization, skillModel: skillModel, habitArchitecture: habitArchitecture)
+        } catch {
+            let errText: String
+            if let e = error as? OpenAIError {
+                errText = String(describing: e)
+            } else {
+                errText = error.localizedDescription
+            }
+            reinforcementUnits = try await generateReinforcementUnits(normalization: normalization, skillModel: skillModel, habitArchitecture: habitArchitecture, previousError: errText)
+        }
+
+        let recoverySystem: RecoverySystem
+        do {
+            recoverySystem = try await generateRecoverySystem(normalization: normalization, researchReport: researchReport)
+        } catch {
+            let errText: String
+            if let e = error as? OpenAIError {
+                errText = String(describing: e)
+            } else {
+                errText = error.localizedDescription
+            }
+            recoverySystem = try await generateRecoverySystem(normalization: normalization, researchReport: researchReport, previousError: errText)
         }
 
         // Avoid echoing user-entered cadence words that are banned in AI output.
@@ -1529,6 +1792,8 @@ struct OpenAIClient {
             skillModel: skillModel,
             capabilityStages: capabilityStages,
             habitArchitecture: habitArchitecture,
+            reinforcementUnits: reinforcementUnits,
+            recoverySystem: recoverySystem,
             researchReport: researchReport,
             masteryDefinition: masteryDefinition,
             frictions: frictions,

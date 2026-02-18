@@ -166,6 +166,10 @@ struct HabitGuide: Codable, Hashable {
     var capabilityStages: [CapabilityStage]?
     /// STEP 3: behavior compilation (behaviors mapped to capability + leverage). Optional for backward compatibility.
     var habitArchitecture: HabitArchitecture?
+    /// STEP 4: reinforcement compilation (bingo units mapped to behaviors). Optional for backward compatibility.
+    var reinforcementUnits: [ReinforcementUnit]?
+    /// STEP 5: recovery engine (interrupt protection + identity protection). Optional for backward compatibility.
+    var recoverySystem: RecoverySystem?
 
     /// PASS 1: research-first report (design rationale). Optional for backward compatibility.
     var researchReport: HabitResearchReport?
@@ -185,6 +189,8 @@ struct HabitGuide: Codable, Hashable {
         skillModel: SkillModelReport? = nil,
         capabilityStages: [CapabilityStage]? = nil,
         habitArchitecture: HabitArchitecture? = nil,
+        reinforcementUnits: [ReinforcementUnit]? = nil,
+        recoverySystem: RecoverySystem? = nil,
         researchReport: HabitResearchReport? = nil,
         masteryDefinition: String = "",
         frictions: [String] = [],
@@ -197,6 +203,8 @@ struct HabitGuide: Codable, Hashable {
         self.skillModel = skillModel
         self.capabilityStages = capabilityStages
         self.habitArchitecture = habitArchitecture
+        self.reinforcementUnits = reinforcementUnits
+        self.recoverySystem = recoverySystem
         self.researchReport = researchReport
         self.masteryDefinition = masteryDefinition
         self.frictions = frictions
@@ -211,6 +219,8 @@ struct HabitGuide: Codable, Hashable {
         case skillModel
         case capabilityStages
         case habitArchitecture
+        case reinforcementUnits
+        case recoverySystem
         case researchReport
         case masteryDefinition
         case frictions
@@ -226,6 +236,8 @@ struct HabitGuide: Codable, Hashable {
         skillModel = try container.decodeIfPresent(SkillModelReport.self, forKey: .skillModel)
         capabilityStages = try container.decodeIfPresent([CapabilityStage].self, forKey: .capabilityStages)
         habitArchitecture = try container.decodeIfPresent(HabitArchitecture.self, forKey: .habitArchitecture)
+        reinforcementUnits = try container.decodeIfPresent([ReinforcementUnit].self, forKey: .reinforcementUnits)
+        recoverySystem = try container.decodeIfPresent(RecoverySystem.self, forKey: .recoverySystem)
         researchReport = try container.decodeIfPresent(HabitResearchReport.self, forKey: .researchReport)
         masteryDefinition = try container.decodeIfPresent(String.self, forKey: .masteryDefinition) ?? ""
         frictions = try container.decodeIfPresent([String].self, forKey: .frictions) ?? []
@@ -302,6 +314,27 @@ struct HabitBehavior: Codable, Hashable {
     var leverageRef: String
     var whyBuildsCapability: String
     var identityImpact: String
+}
+
+struct ReinforcementUnit: Codable, Hashable {
+    var behaviorRef: String
+    var bingoTasks: [ReinforcementTask]
+}
+
+struct ReinforcementTask: Identifiable, Codable, Hashable {
+    var id: String { taskId }
+
+    var taskId: String
+    var text: String
+    var observable: String
+    var reinforcesCapability: String
+    var reinforcesIdentity: String
+}
+
+struct RecoverySystem: Codable, Hashable {
+    var microRecovery: String
+    var identityProtection: String
+    var resetRule: String
 }
 
 struct HabitResearchReport: Codable, Hashable {
