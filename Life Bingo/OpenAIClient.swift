@@ -2164,6 +2164,65 @@ struct OpenAIClient {
         let responseModel: HabitGuideResponse
         do {
             // Request PASS2B and validate; retry once with validation error.
+            func decodePASS2B(_ data: Data) throws -> HabitGuideResponse {
+                do {
+                    return try JSONDecoder().decode(HabitGuideResponse.self, from: data)
+                } catch {
+                    // Salvage: some models output a flat {"steps":[...]} object (missing stages).
+                    // We try to decode and regroup by stepId prefix (S/P/L/B/R).
+                    struct FlatResponse: Decodable {
+                        var masteryDefinition: String?
+                        var frictions: [String]?
+                        var methodRoute: [String]?
+                        var steps: [HabitGuideStepResponse]
+                    }
+
+                    let flat = try JSONDecoder().decode(FlatResponse.self, from: data)
+
+                    func normalizeStepId(_ raw: String?) -> String? {
+                        guard let raw else { return nil }
+                        let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if t.isEmpty { return nil }
+                        if t.contains("_") {
+                            let last = t.split(separator: "_").last.map(String.init) ?? t
+                            return last.trimmingCharacters(in: .whitespacesAndNewlines)
+                        }
+                        return t
+                    }
+
+                    func stageIndex(for stepId: String) -> Int? {
+                        if stepId.hasPrefix("S") { return 0 }
+                        if stepId.hasPrefix("P") { return 1 }
+                        if stepId.hasPrefix("L") { return 2 }
+                        if stepId.hasPrefix("B") { return 3 }
+                        if stepId.hasPrefix("R") { return 4 }
+                        return nil
+                    }
+
+                    let nameForStage: [Int: String] = [0: "種子", 1: "發芽", 2: "長葉", 3: "開花", 4: "扎根"]
+                    var buckets: [Int: [HabitGuideStepResponse]] = [:]
+
+                    for var s in flat.steps {
+                        let sid = normalizeStepId(s.stepId)
+                        s.stepId = sid
+                        if let sid, let idx = stageIndex(for: sid) {
+                            buckets[idx, default: []].append(s)
+                        }
+                    }
+
+                    let stages: [HabitGuideStageResponse] = (0...4).map { idx in
+                        HabitGuideStageResponse(stage: idx, stageName: nameForStage[idx], steps: buckets[idx] ?? [])
+                    }
+
+                    return HabitGuideResponse(
+                        masteryDefinition: flat.masteryDefinition,
+                        frictions: flat.frictions,
+                        methodRoute: flat.methodRoute,
+                        stages: stages
+                    )
+                }
+            }
+
             let first = try await requestJSON(maxOutputTokens: 3600, prompt: {
                 // build PASS2B prompt inline to avoid capturing issues
                 let draftStepsText: String = draft.stages
@@ -2207,10 +2266,11 @@ struct OpenAIClient {
 - bingoTasks 必須係 {"tasks":[...]}，且 tasks 不可為空。
 
 【輸出】只輸出完整 JSON（同原本 PASS2 格式一致）。
+- 頂層必須用 "stages"（不得用 "steps" 當頂層 key）。
 只回傳 JSON。
 """
             }(), parse: { data in
-                try JSONDecoder().decode(HabitGuideResponse.self, from: data)
+                try decodePASS2B(data)
             }, emptyError: "PASS2B 回應內容為空", parseErrorPrefix: "PASS2B JSON 解析失敗")
 
             do {
@@ -2265,9 +2325,10 @@ struct OpenAIClient {
 \(interventionCatalog)
 
 【輸出】只回傳完整 JSON。
+- 頂層必須用 "stages"（不得用 "steps" 當頂層 key）。
 """
                 })(), parse: { data in
-                    try JSONDecoder().decode(HabitGuideResponse.self, from: data)
+                    try decodePASS2B(data)
                 }, emptyError: "PASS2B 回應內容為空", parseErrorPrefix: "PASS2B JSON 解析失敗")
 
                 try Self.validateHabitGuideResponse(
