@@ -1226,7 +1226,9 @@ struct OpenAIClient {
 
         let banned = ["每天", "每日", "天天"]
         let allText = env.reinforcementUnits.flatMap { u in
-            u.bingoTasks.map { t in "\(u.behaviorRef) \(t.taskId) \(t.text) \(t.observable) \(t.reinforcesCapability) \(t.reinforcesIdentity)" }
+            let cap = u.capabilityRef ?? ""
+            let form = u.form ?? ""
+            return u.bingoTasks.map { t in "\(cap) \(form) \(t.taskId) \(t.text) \(t.observable) \(t.reinforcesCapability) \(t.reinforcesIdentity)" }
         }.joined(separator: "\n")
         for w in banned where allText.contains(w) { throw OpenAIError.parse("STEP4 輸出包含禁字：\(w)") }
 

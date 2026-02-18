@@ -1588,13 +1588,18 @@ struct HabitGuideSection: View {
                         if let units = guide.reinforcementUnits, !units.isEmpty {
                             DisclosureGroup(isExpanded: $isReinforcementExpanded) {
                                 VStack(alignment: .leading, spacing: 10) {
-                                    ForEach(units, id: \.behaviorRef) { unit in
+                                    ForEach(units, id: \.self) { unit in
+                                        let cap = (unit.capabilityRef ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                                        let form = (unit.form ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                                        let header = [cap.isEmpty ? nil : cap, form.isEmpty ? nil : form].compactMap { $0 }.joined(separator: " · ")
+
                                         VStack(alignment: .leading, spacing: 6) {
-                                            Text("Behavior \(unit.behaviorRef)")
+                                            Text(header.isEmpty ? "強化單位" : header)
                                                 .font(.system(size: 13, weight: .semibold))
                                                 .foregroundStyle(Theme.textPrimary)
+
                                             ForEach(unit.bingoTasks, id: \.taskId) { t in
-                                                Text("• [\(t.taskId)] \(t.text)（cap: \(t.reinforcesCapability)）")
+                                                Text("• [\(t.taskId)] \(t.text)（observable: \(t.observable)｜identity: \(t.reinforcesIdentity)）")
                                                     .font(.system(size: 13))
                                                     .foregroundStyle(Theme.textSecondary)
                                             }
