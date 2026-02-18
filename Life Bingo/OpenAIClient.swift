@@ -2097,6 +2097,7 @@ struct OpenAIClient {
 只回傳 JSON。
 """
 
+            _ = prompt
             return try await requestPASS2(previousError: nil) // placeholder, replaced below
         }
 
