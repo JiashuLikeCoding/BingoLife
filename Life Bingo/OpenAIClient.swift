@@ -1910,9 +1910,308 @@ struct OpenAIClient {
             }
         }
 
+        // PASS2 split: PASS2A generates research-derived steps; PASS2B compiles micro bingoTasks for each step.
+        struct PASS2ADraftStep: Decodable {
+            let stepId: String?
+            let title: String
+            let duration: String
+            let fallback: String
+            let category: String?
+            let derivedFromInterventionIds: [String]?
+            let requiredBingoCount: Int?
+            let behaviorRef: String?
+            let capabilityRef: String?
+            let leverageRef: String?
+        }
+        struct PASS2ADraftStage: Decodable {
+            let stage: Int
+            let name: String
+            let steps: [PASS2ADraftStep]
+        }
+        struct PASS2ADraftResponse: Decodable {
+            let masteryDefinition: String?
+            let frictions: [String]?
+            let methodRoute: [String]?
+            let stages: [PASS2ADraftStage]
+        }
+
+        func requestPASS2A(previousError: String?) async throws -> PASS2ADraftResponse {
+            let previousErrorBlock: String = {
+                guard let previousError, !previousError.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return "" }
+                return """
+【上次輸出未通過驗證】
+\(previousError)
+請你只修正錯誤點並重新輸出完整 JSON；不要省略任何欄位。
+"""
+            }()
+
+            let summaryBlueprint: String = (researchReport.summary)
+                .map { "- \($0.trimmingCharacters(in: .whitespacesAndNewlines))" }
+                .joined(separator: "\n")
+
+            let prompt = """
+你是習慣地圖設計師。請為「\(sanitizedGoal.isEmpty ? goal : sanitizedGoal)」做 PASS 2A：先把研究拆成 5 階段 steps（先唔要 bingoTasks）。
+注意：你在任何輸出欄位都不得出現 cadence 字：每天、每日、天天。
+\(previousErrorBlock)
+
+【PASS 1 研究報告（summary：28-day blueprint；用來決定每個 stage 要有咩重點）】
+\(summaryBlueprint)
+
+【PASS 1 研究報告（interventionPlan；每個 step 必須引用至少 1 個 interventionId）】
+你只能使用以下干預策略來設計 steps；不准憑空新增新的策略或口號。
+\(interventionCatalog)
+
+【STEP 3 行為編譯（behavior catalog；PASS2A 必須由此『編譯』）】
+\(compiledBehaviorCatalog)
+
+【輸出目標】
+- stages 必須剛好 5 個（stage=0..4）。
+- 每個 stage 目標 2–3 個 steps（自然跟住 research 分段；唔好塞口號）。
+- 每個 step：
+  - title 必須係具體行為（禁止抽象：培養觸發點／建立儀式／克服阻力）。
+  - derivedFromInterventionIds：至少 1 個，只能用 PASS1 interventionId。
+  - behaviorRef/capabilityRef/leverageRef：必須對應 STEP3 catalog。
+  - requiredBingoCount：先暫定 2（之後 PASS2B 會補 bingoTasks）。
+
+【步驟 ID 規則】
+- stage 0: S1..Sn
+- stage 1: P1..Pn
+- stage 2: L1..Ln
+- stage 3: B1..Bn
+- stage 4: R1..Rn
+
+【輸出】只輸出 JSON（PASS2A 不要包含 bingoTasks 欄位）：
+{
+  "masteryDefinition": "...",
+  "frictions": ["..."],
+  "methodRoute": ["..."],
+  "stages": [
+    {
+      "stage": 0,
+      "name": "種子",
+      "steps": [
+        {
+          "stepId": "S1",
+          "title": "...",
+          "duration": "...",
+          "fallback": "...",
+          "category": "...",
+          "derivedFromInterventionIds": ["I1"],
+          "requiredBingoCount": 2,
+          "behaviorRef": "B1",
+          "capabilityRef": "C1",
+          "leverageRef": "L1"
+        }
+      ]
+    }
+  ]
+}
+
+只回傳 JSON。
+"""
+
+            return try await requestJSON(maxOutputTokens: 2600, prompt: prompt, parse: { data in
+                try JSONDecoder().decode(PASS2ADraftResponse.self, from: data)
+            }, emptyError: "PASS2A 回應內容為空", parseErrorPrefix: "PASS2A JSON 解析失敗")
+        }
+
+        func requestPASS2B(draft: PASS2ADraftResponse, previousError: String?) async throws -> HabitGuideResponse {
+            let previousErrorBlock: String = {
+                guard let previousError, !previousError.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return "" }
+                return """
+【上次輸出未通過驗證】
+\(previousError)
+請你只修正錯誤點並重新輸出完整 JSON；不要省略任何欄位。
+"""
+            }()
+
+            let draftStepsText: String = draft.stages
+                .sorted(by: { $0.stage < $1.stage })
+                .flatMap { st in
+                    st.steps.map { s in
+                        let sid = (s.stepId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                        let cap = (s.capabilityRef ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                        let lev = (s.leverageRef ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                        let beh = (s.behaviorRef ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                        let ids = (s.derivedFromInterventionIds ?? []).joined(separator: ",")
+                        return "- stage \(st.stage) \(sid): \(s.title)｜dur=\(s.duration)｜fallback=\(s.fallback)｜cat=\(s.category ?? "")｜beh=\(beh)｜cap=\(cap)｜lev=\(lev)｜itv=\(ids)"
+                    }
+                }
+                .joined(separator: "\n")
+
+            let summaryBlueprint: String = (researchReport.summary)
+                .map { "- \($0.trimmingCharacters(in: .whitespacesAndNewlines))" }
+                .joined(separator: "\n")
+
+            let prompt = """
+你是習慣地圖設計師。請為「\(sanitizedGoal.isEmpty ? goal : sanitizedGoal)」做 PASS 2B：為 PASS2A 的每一個 step 拆出 micro bingoTasks。
+注意：你在任何輸出欄位都不得出現 cadence 字：每天、每日、天天。
+\(previousErrorBlock)
+
+【PASS 2A 已確定 steps（你不可改 stepId/title/duration/fallback/category/derivedFromInterventionIds/behaviorRef/capabilityRef/leverageRef；只可以補 bingoTasks、以及可微調 requiredBingoCount 1–3）】
+\(draftStepsText)
+
+【PASS 1 研究報告（summary：用來決定『拆細』時要避開哪些阻力、用哪種替代版本）】
+\(summaryBlueprint)
+
+【PASS 1 interventionPlan（bingoTasks 的 derivedFromInterventionIds 只可用呢度的 interventionId）】
+\(interventionCatalog)
+
+【規則】
+- 每個 step 的 bingoTasks.tasks 目標 2–4 個（至少 2）。
+- 每個 task 必須係可立即做嘅細動作（≤60秒／一個完整動作循環），唔可以「要用戶再決定」。
+- 每個 task 必須 mapsToStep=該 stepId，taskId 唯一。
+- 每個 task 必須 derivedFromInterventionIds（至少 1 個）。
+- requiredBingoCount 建議 2（除非 task 特別難先用 1）。
+
+【輸出】只輸出完整 Habit Map JSON（格式同原本 PASS2 一樣）：
+{
+  "masteryDefinition": "...",
+  "frictions": ["..."],
+  "methodRoute": ["..."],
+  "stages": [
+    {
+      "stage": 0,
+      "name": "種子",
+      "steps": [
+        {
+          "stepId": "S1",
+          "title": "...",
+          "duration": "...",
+          "fallback": "...",
+          "category": "...",
+          "derivedFromInterventionIds": ["I1"],
+          "requiredBingoCount": 2,
+          "behaviorRef": "B1",
+          "capabilityRef": "C1",
+          "leverageRef": "L1",
+          "bingoTasks": {"tasks": [
+            {"taskId":"S1-T1","mapsToStep":"S1","derivedFromInterventionIds":["I1"],"text":"...","durationSec":45,"observable":"...","successProbability":0.75}
+          ]}
+        }
+      ]
+    }
+  ]
+}
+
+只回傳 JSON。
+"""
+
+            return try await requestPASS2(previousError: nil) // placeholder, replaced below
+        }
+
+        // Helper: centralized JSON request with parse.
+        func requestJSON<T>(maxOutputTokens: Int, prompt: String, parse: (Data) throws -> T, emptyError: String, parseErrorPrefix: String) async throws -> T {
+            let requestBody: [String: Any] = [
+                "model": model,
+                "input": [
+                    ["role": "system", "content": "You are a helpful assistant. Respond in JSON only."],
+                    ["role": "user", "content": prompt]
+                ],
+                "text": ["format": ["type": "json_object"]],
+                "max_output_tokens": maxOutputTokens
+            ]
+
+            var request = URLRequest(url: URL(string: "https://api.openai.com/v1/responses")!)
+            request.httpMethod = "POST"
+            request.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            request.addValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try JSONSerialization.data(withJSONObject: requestBody, options: [])
+            request.timeoutInterval = 120
+
+            let (data, response): (Data, URLResponse)
+            do {
+                (data, response) = try await URLSession.shared.data(for: request)
+            } catch {
+                if let urlError = error as? URLError,
+                   urlError.code == .networkConnectionLost || urlError.code == .timedOut {
+                    try? await Task.sleep(nanoseconds: 600_000_000)
+                    (data, response) = try await URLSession.shared.data(for: request)
+                } else {
+                    throw error
+                }
+            }
+
+            guard let http = response as? HTTPURLResponse else { throw OpenAIError.network("無法取得回應") }
+            if !(200...299).contains(http.statusCode) {
+                let message = String(data: data, encoding: .utf8) ?? "狀態碼 \(http.statusCode)"
+                throw OpenAIError.server(message)
+            }
+
+            let decoded = try JSONDecoder().decode(OpenAIResponse.self, from: data)
+            if let error = decoded.error { throw OpenAIError.server(error.message) }
+            let text = decoded.outputText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty, let jsonData = text.data(using: .utf8) else { throw OpenAIError.parse(emptyError) }
+
+            do {
+                return try parse(jsonData)
+            } catch {
+                let preview = text.prefix(400)
+                throw OpenAIError.parse("\(parseErrorPrefix)：\(error.localizedDescription)\npreview: \(preview)")
+            }
+        }
+
+        // PASS2A → PASS2B
+        let draft: PASS2ADraftResponse
+        do {
+            draft = try await requestPASS2A(previousError: nil)
+        } catch {
+            let errText = (error as? OpenAIError).map(String.init(describing:)) ?? error.localizedDescription
+            draft = try await requestPASS2A(previousError: errText)
+        }
+
         let responseModel: HabitGuideResponse
         do {
-            let first = try await requestPASS2(previousError: nil)
+            // Request PASS2B and validate; retry once with validation error.
+            let first = try await requestJSON(maxOutputTokens: 3600, prompt: {
+                // build PASS2B prompt inline to avoid capturing issues
+                let draftStepsText: String = draft.stages
+                    .sorted(by: { $0.stage < $1.stage })
+                    .flatMap { st in
+                        st.steps.map { s in
+                            let sid = (s.stepId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                            let cap = (s.capabilityRef ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                            let lev = (s.leverageRef ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                            let beh = (s.behaviorRef ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                            let ids = (s.derivedFromInterventionIds ?? []).joined(separator: ",")
+                            return "- stage \(st.stage) \(sid): \(s.title)｜dur=\(s.duration)｜fallback=\(s.fallback)｜cat=\(s.category ?? "")｜beh=\(beh)｜cap=\(cap)｜lev=\(lev)｜itv=\(ids)"
+                        }
+                    }
+                    .joined(separator: "\n")
+
+                let summaryBlueprint: String = (researchReport.summary)
+                    .map { "- \($0.trimmingCharacters(in: .whitespacesAndNewlines))" }
+                    .joined(separator: "\n")
+
+                return """
+你是習慣地圖設計師。請為「\(sanitizedGoal.isEmpty ? goal : sanitizedGoal)」做 PASS 2B：為 PASS2A 的每一個 step 拆出 micro bingoTasks。
+注意：你在任何輸出欄位都不得出現 cadence 字：每天、每日、天天。
+
+【PASS 2A 已確定 steps（你不可改 stepId/title/duration/fallback/category/derivedFromInterventionIds/behaviorRef/capabilityRef/leverageRef；只可以補 bingoTasks、以及可微調 requiredBingoCount 1–3）】
+\(draftStepsText)
+
+【PASS 1 研究報告（summary：用來決定『拆細』時要避開哪些阻力、用哪種替代版本）】
+\(summaryBlueprint)
+
+【PASS 1 interventionPlan（bingoTasks 的 derivedFromInterventionIds 只可用呢度的 interventionId）】
+\(interventionCatalog)
+
+【硬規則】
+- 禁止產生抽象步驟名（例如：培養觸發點、建立儀式、克服阻力、開始行動）。
+- stages 必須剛好 5 個（stage=0..4）。
+- 每個 stage 至少 2 個 steps。
+- 每個 step 必須包含 derivedFromInterventionIds（至少 1 個）。
+- 每個 step 必須包含 behaviorRef/capabilityRef/leverageRef，且必須對應 STEP3 catalog。
+- 每個 step 的 bingoTasks.tasks：目標 2–4 個（至少 2）。
+- bingoTasks 必須係 {"tasks":[...]}，且 tasks 不可為空。
+
+【輸出】只輸出完整 JSON（同原本 PASS2 格式一致）。
+只回傳 JSON。
+"""
+            }(), parse: { data in
+                try JSONDecoder().decode(HabitGuideResponse.self, from: data)
+            }, emptyError: "PASS2B 回應內容為空", parseErrorPrefix: "PASS2B JSON 解析失敗")
+
             do {
                 try Self.validateHabitGuideResponse(
                     goal: goal,
@@ -1926,13 +2225,50 @@ struct OpenAIClient {
                 )
                 responseModel = first
             } catch {
-                let errText: String
-                if let e = error as? OpenAIError {
-                    errText = String(describing: e)
-                } else {
-                    errText = error.localizedDescription
-                }
-                let second = try await requestPASS2(previousError: errText)
+                let errText = (error as? OpenAIError).map(String.init(describing:)) ?? error.localizedDescription
+                let second = try await requestJSON(maxOutputTokens: 3600, prompt: ({
+                    let base = """
+你上一份 PASS2B 輸出未通過驗證：\(errText)
+請你只修正錯誤點，重新輸出完整 JSON。
+"""
+                    // reuse same prompt as first
+                    let draftStepsText: String = draft.stages
+                        .sorted(by: { $0.stage < $1.stage })
+                        .flatMap { st in
+                            st.steps.map { s in
+                                let sid = (s.stepId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                                let cap = (s.capabilityRef ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                                let lev = (s.leverageRef ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                                let beh = (s.behaviorRef ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                                let ids = (s.derivedFromInterventionIds ?? []).joined(separator: ",")
+                                return "- stage \(st.stage) \(sid): \(s.title)｜dur=\(s.duration)｜fallback=\(s.fallback)｜cat=\(s.category ?? "")｜beh=\(beh)｜cap=\(cap)｜lev=\(lev)｜itv=\(ids)"
+                            }
+                        }
+                        .joined(separator: "\n")
+
+                    let summaryBlueprint: String = (researchReport.summary)
+                        .map { "- \($0.trimmingCharacters(in: .whitespacesAndNewlines))" }
+                        .joined(separator: "\n")
+
+                    return base + """
+你是習慣地圖設計師。請為「\(sanitizedGoal.isEmpty ? goal : sanitizedGoal)」做 PASS 2B：為 PASS2A 的每一個 step 拆出 micro bingoTasks。
+注意：你在任何輸出欄位都不得出現 cadence 字：每天、每日、天天。
+
+【PASS 2A steps（不可更改）】
+\(draftStepsText)
+
+【PASS 1 summary】
+\(summaryBlueprint)
+
+【PASS 1 interventionPlan】
+\(interventionCatalog)
+
+【輸出】只回傳完整 JSON。
+"""
+                })(), parse: { data in
+                    try JSONDecoder().decode(HabitGuideResponse.self, from: data)
+                }, emptyError: "PASS2B 回應內容為空", parseErrorPrefix: "PASS2B JSON 解析失敗")
+
                 try Self.validateHabitGuideResponse(
                     goal: goal,
                     researchReport: researchReport,
@@ -2137,8 +2473,8 @@ struct OpenAIClient {
         }()
 
         for s in stages {
-            if s.steps.isEmpty {
-                throw OpenAIError.parse("stage \(s.stage) steps 至少 1 個")
+            if s.steps.count < 2 {
+                throw OpenAIError.parse("stage \(s.stage) steps 至少 2 個")
             }
             for step in s.steps {
                 let sidRaw = (step.stepId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2223,8 +2559,8 @@ struct OpenAIClient {
 
                 let tasksField = step.bingoTasks?.tasks ?? []
                 let tasks = tasksField.map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
-                if tasks.isEmpty {
-                    throw OpenAIError.parse("step \(sidRaw) bingoTasks 至少 1 個")
+                if tasks.count < 2 {
+                    throw OpenAIError.parse("step \(sidRaw) bingoTasks 至少 2 個")
                 }
 
                 // PASS3 will enforce task-level traceability later.
