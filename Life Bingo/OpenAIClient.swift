@@ -1236,6 +1236,12 @@ struct OpenAIClient {
         let requiredForms: Set<String> = ["身體動作型", "語言輸出型", "環境改造型", "微決策型", "社交/外部承諾型"]
 
         // Validate: cover every capability with exactly the 5 distinct forms.
+        // Expected count is exactly capabilities * 5 (one unit per form).
+        let expectedUnitCount = capIds.count * requiredForms.count
+        if env.reinforcementUnits.count != expectedUnitCount {
+            throw OpenAIError.parse("STEP4 reinforcementUnits 數量必須為 \(expectedUnitCount)（capabilities=\(capIds.count) × forms=\(requiredForms.count)），目前：\(env.reinforcementUnits.count)")
+        }
+
         var formsByCap: [String: Set<String>] = [:]
         var coveredCaps: Set<String> = []
 
@@ -1474,13 +1480,24 @@ struct OpenAIClient {
         do {
             reinforcementUnits = try await generateReinforcementUnits(normalization: normalization, skillModel: skillModel, habitArchitecture: habitArchitecture)
         } catch {
-            let errText: String
+            // Retry STEP4 (up to 2 additional tries) because missing forms are cheap to fix.
+            let errText1: String
             if let e = error as? OpenAIError {
-                errText = String(describing: e)
+                errText1 = String(describing: e)
             } else {
-                errText = error.localizedDescription
+                errText1 = error.localizedDescription
             }
-            reinforcementUnits = try await generateReinforcementUnits(normalization: normalization, skillModel: skillModel, habitArchitecture: habitArchitecture, previousError: errText)
+            do {
+                reinforcementUnits = try await generateReinforcementUnits(normalization: normalization, skillModel: skillModel, habitArchitecture: habitArchitecture, previousError: errText1)
+            } catch {
+                let errText2: String
+                if let e = error as? OpenAIError {
+                    errText2 = String(describing: e)
+                } else {
+                    errText2 = error.localizedDescription
+                }
+                reinforcementUnits = try await generateReinforcementUnits(normalization: normalization, skillModel: skillModel, habitArchitecture: habitArchitecture, previousError: errText2)
+            }
         }
 
         let recoverySystem: RecoverySystem
