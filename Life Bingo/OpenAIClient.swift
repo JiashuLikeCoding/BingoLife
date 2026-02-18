@@ -1445,6 +1445,17 @@ struct OpenAIClient {
             return items.joined(separator: "\n")
         }()
 
+        let compiledBehaviorCatalog: String = {
+            habitArchitecture.stages
+                .sorted(by: { $0.stage < $1.stage })
+                .flatMap { st in
+                    st.behaviors.map { b in
+                        "- \(b.behaviorId): \(b.title)｜cap=\(b.capabilityRef)｜lev=\(b.leverageRef)｜identity=\(b.identityImpact)｜why=\(b.whyBuildsCapability)"
+                    }
+                }
+                .joined(separator: "\n")
+        }()
+
         let prompt = """
         你是習慣地圖設計師。請為「\(sanitizedGoal.isEmpty ? goal : sanitizedGoal)」生成一份 5 階段的 Habit Map（PASS 2）。
         注意：使用者輸入的目標可能包含「每天/每日/天天」等字樣，但你在任何輸出欄位都不得重複這些字樣；請用不含頻率詞的描述來寫所有步驟與任務。
@@ -1452,6 +1463,12 @@ struct OpenAIClient {
         【PASS 1 研究報告（interventionPlan）】
         你只能使用以下干預策略來設計 steps / bingoTasks；不准憑空新增新的策略或口號。
         \(interventionCatalog)
+
+        【STEP 3 行為編譯（behavior catalog；PASS2 必須由此『編譯』，禁止另起爐灶）】
+        下面每條 behavior 都已經對應 capabilityId/leverageId 與 identityImpact。
+        你在 PASS2 只能『把這些 behaviors 編排到 5 階段 Habit Map』並拆成更小的 bingoTasks。
+        禁止新增新的行為方向或不同於 catalog 的內容。
+        \(compiledBehaviorCatalog)
 
         【第一：熟練定義（必須具體可觀察）】
         禁止：抽象描述如「自然地做」「成為生活一部份」「養成習慣」「持續執行」。
@@ -1541,12 +1558,27 @@ struct OpenAIClient {
                 {
                   "stepId": "S1",
                   "derivedFromInterventionIds": ["I1"],
-                  "title": "具體行動（做 XXX / 選定 XXX / 把 XXX 放好）",
+                  "behaviorRef": "B1",
+                  "capabilityRef": "C1",
+                  "leverageRef": "L1",
+                  "title": "（必須是 behaviorRef 的可執行子版本；不可另起爐灶）",
                   "duration": "30 秒",
                   "fallback": "更小版本",
                   "category": "行為/環境/心理",
                   "requiredBingoCount": 2,
-                  "bingoTasks": ["細動作1", "細動作2", "細動作3"]
+                  "bingoTasks": {
+                    "tasks": [
+                      {
+                        "taskId": "S1-T1",
+                        "mapsToStep": "S1",
+                        "derivedFromInterventionIds": ["I1"],
+                        "text": "≤60 秒的具體動作（必須屬於 behaviorRef）",
+                        "durationSec": 45,
+                        "observable": "完成標誌",
+                        "successProbability": 0.8
+                      }
+                    ]
+                  }
                 }
               ]
             }
@@ -1577,7 +1609,9 @@ struct OpenAIClient {
           - stage 4: R1..Rn
         - 【PASS2 追溯要求】每個 step 必須包含 derivedFromInterventionIds（陣列，至少 1 個），而且只能使用 PASS 1 的 interventionId（例如 I1/I2...）。
         - 每個 step 必須包含 requiredBingoCount（1–3，代表完成幾個 Bingo 任務先算完成該 step）。
+        - 每個 step 必須包含 behaviorRef/capabilityRef/leverageRef，且它們必須對應到 STEP 3 behavior catalog（不可亂填）。
         - 每個 step 的 bingoTasks 至少 1 個，且全都是細動作（可直接做，不需要用戶再決定做咩）。
+        - bingoTasks 必須是物件陣列（不要用純字串陣列），並且每個 task 的 derivedFromInterventionIds 只能使用 PASS1 interventionId。
 
         只回傳 JSON，不要有任何其他文字。
         """
@@ -1729,7 +1763,16 @@ struct OpenAIClient {
             .filter { !$0.isEmpty }
 
         // Strict validation: no local fallback templates.
-        try Self.validateHabitGuideResponse(goal: goal, researchReport: researchReport, masteryDefinition: masteryDefinition, frictions: frictions, methodRoute: methodRoute, response: responseModel)
+        try Self.validateHabitGuideResponse(
+            goal: goal,
+            researchReport: researchReport,
+            skillModel: skillModel,
+            habitArchitecture: habitArchitecture,
+            masteryDefinition: masteryDefinition,
+            frictions: frictions,
+            methodRoute: methodRoute,
+            response: responseModel
+        )
 
         let stages = responseModel.stages
             .sorted { $0.stage < $1.stage }
@@ -1773,6 +1816,9 @@ struct OpenAIClient {
                         id: UUID(),
                         stepId: trimmedStepId,
                         derivedFromInterventionIds: derivedFrom,
+                        behaviorRef: step.behaviorRef?.trimmingCharacters(in: .whitespacesAndNewlines),
+                        capabilityRef: step.capabilityRef?.trimmingCharacters(in: .whitespacesAndNewlines),
+                        leverageRef: step.leverageRef?.trimmingCharacters(in: .whitespacesAndNewlines),
                         title: trimmedTitle,
                         duration: trimmedDuration,
                         fallback: trimmedFallback,
@@ -1806,6 +1852,8 @@ struct OpenAIClient {
     private static func validateHabitGuideResponse(
         goal: String,
         researchReport: HabitResearchReport?,
+        skillModel: SkillModelReport?,
+        habitArchitecture: HabitArchitecture?,
         masteryDefinition: String,
         frictions: [String],
         methodRoute: [String],
@@ -1879,6 +1927,20 @@ struct OpenAIClient {
             return Set(researchReport.interventionPlan.map { $0.interventionId.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })
         }()
 
+        // PASS2 should compile from STEP3 behaviors + STEP1 skill model.
+        let capabilityIds: Set<String> = Set(skillModel?.requiredCapabilities.map { $0.capabilityId } ?? [])
+        let leverageIds: Set<String> = Set(skillModel?.leveragePoints.map { $0.leverageId } ?? [])
+        let behaviorById: [String: HabitBehavior] = {
+            guard let habitArchitecture else { return [:] }
+            var map: [String: HabitBehavior] = [:]
+            for st in habitArchitecture.stages {
+                for b in st.behaviors {
+                    map[b.behaviorId] = b
+                }
+            }
+            return map
+        }()
+
         for s in stages {
             if s.steps.isEmpty {
                 throw OpenAIError.parse("stage \(s.stage) steps 至少 1 個")
@@ -1926,6 +1988,35 @@ struct OpenAIClient {
                 let duration = step.duration.trimmingCharacters(in: .whitespacesAndNewlines)
                 if title.isEmpty || fallback.isEmpty {
                     throw OpenAIError.parse("step title/fallback 不可為空")
+                }
+
+                // Enforce compilation linkage to STEP3 behaviors when available.
+                if !behaviorById.isEmpty {
+                    let bRef = (step.behaviorRef ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                    if bRef.isEmpty {
+                        throw OpenAIError.parse("step \(sidRaw) 缺少 behaviorRef（必須由 STEP3 behaviors 編譯）")
+                    }
+                    guard let b = behaviorById[bRef] else {
+                        throw OpenAIError.parse("step \(sidRaw) behaviorRef 不存在：\(bRef)")
+                    }
+
+                    let capRef = (step.capabilityRef ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                    let levRef = (step.leverageRef ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                    if capRef.isEmpty || levRef.isEmpty {
+                        throw OpenAIError.parse("step \(sidRaw) 缺少 capabilityRef/leverageRef")
+                    }
+                    if !capabilityIds.isEmpty, !capabilityIds.contains(capRef) {
+                        throw OpenAIError.parse("step \(sidRaw) capabilityRef 不存在：\(capRef)")
+                    }
+                    if !leverageIds.isEmpty, !leverageIds.contains(levRef) {
+                        throw OpenAIError.parse("step \(sidRaw) leverageRef 不存在：\(levRef)")
+                    }
+                    if capRef != b.capabilityRef {
+                        throw OpenAIError.parse("step \(sidRaw) capabilityRef 必須與 behavior \(bRef) 一致（期望 \(b.capabilityRef)，得到 \(capRef)）")
+                    }
+                    if levRef != b.leverageRef {
+                        throw OpenAIError.parse("step \(sidRaw) leverageRef 必須與 behavior \(bRef) 一致（期望 \(b.leverageRef)，得到 \(levRef)）")
+                    }
                 }
 
                 if s.stage == 4 {
@@ -2046,6 +2137,12 @@ struct HabitGuideStepResponse: Codable {
     var stepId: String?
     /// PASS2 traceability: which PASS1 interventions this step is derived from.
     var derivedFromInterventionIds: [String]?
+
+    /// STEP3 compilation traceability (PASS2 should compile from STEP3 behaviors)
+    var behaviorRef: String?
+    var capabilityRef: String?
+    var leverageRef: String?
+
     var title: String
     var duration: String
     var fallback: String

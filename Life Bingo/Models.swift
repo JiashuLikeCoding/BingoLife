@@ -409,6 +409,12 @@ struct HabitGuideStep: Identifiable, Codable, Hashable {
     var stepId: String
     /// PASS2 traceability: which PASS1 interventions this step is derived from.
     var derivedFromInterventionIds: [String]
+
+    /// Optional STEP3 traceability (PASS2 should compile from STEP3 behaviors).
+    var behaviorRef: String?
+    var capabilityRef: String?
+    var leverageRef: String?
+
     var title: String
     var duration: String
     var fallback: String
@@ -430,6 +436,9 @@ struct HabitGuideStep: Identifiable, Codable, Hashable {
         case id
         case stepId
         case derivedFromInterventionIds
+        case behaviorRef
+        case capabilityRef
+        case leverageRef
         case title
         case duration
         case fallback
@@ -444,6 +453,9 @@ struct HabitGuideStep: Identifiable, Codable, Hashable {
         id: UUID,
         stepId: String,
         derivedFromInterventionIds: [String] = [],
+        behaviorRef: String? = nil,
+        capabilityRef: String? = nil,
+        leverageRef: String? = nil,
         title: String,
         duration: String,
         fallback: String,
@@ -456,6 +468,9 @@ struct HabitGuideStep: Identifiable, Codable, Hashable {
         self.id = id
         self.stepId = stepId
         self.derivedFromInterventionIds = derivedFromInterventionIds
+        self.behaviorRef = behaviorRef
+        self.capabilityRef = capabilityRef
+        self.leverageRef = leverageRef
         self.title = title
         self.duration = duration
         self.fallback = fallback
@@ -473,6 +488,9 @@ struct HabitGuideStep: Identifiable, Codable, Hashable {
         derivedFromInterventionIds = (try container.decodeIfPresent([String].self, forKey: .derivedFromInterventionIds) ?? [])
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
+        behaviorRef = try container.decodeIfPresent(String.self, forKey: .behaviorRef)
+        capabilityRef = try container.decodeIfPresent(String.self, forKey: .capabilityRef)
+        leverageRef = try container.decodeIfPresent(String.self, forKey: .leverageRef)
         title = try container.decodeIfPresent(String.self, forKey: .title) ?? ""
         duration = try container.decodeIfPresent(String.self, forKey: .duration) ?? ""
         fallback = try container.decodeIfPresent(String.self, forKey: .fallback) ?? ""
@@ -498,6 +516,9 @@ struct HabitGuideStep: Identifiable, Codable, Hashable {
         try container.encode(id, forKey: .id)
         try container.encode(stepId, forKey: .stepId)
         try container.encode(derivedFromInterventionIds, forKey: .derivedFromInterventionIds)
+        try container.encode(behaviorRef, forKey: .behaviorRef)
+        try container.encode(capabilityRef, forKey: .capabilityRef)
+        try container.encode(leverageRef, forKey: .leverageRef)
         try container.encode(title, forKey: .title)
         try container.encode(duration, forKey: .duration)
         try container.encode(fallback, forKey: .fallback)
