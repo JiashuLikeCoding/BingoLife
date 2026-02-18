@@ -317,7 +317,18 @@ struct HabitBehavior: Codable, Hashable {
 }
 
 struct ReinforcementUnit: Codable, Hashable {
-    var behaviorRef: String
+    /// New (capability-based) STEP4: which capability this unit reinforces.
+    /// Optional for backward compatibility with older stored data.
+    var capabilityRef: String?
+
+    /// One of: 身體動作型 | 語言輸出型 | 環境改造型 | 微決策型 | 社交/外部承諾型
+    /// Optional for backward compatibility.
+    var form: String?
+
+    /// Legacy (behavior-based) STEP4 linkage.
+    /// Optional for backward compatibility.
+    var behaviorRef: String?
+
     var bingoTasks: [ReinforcementTask]
 }
 

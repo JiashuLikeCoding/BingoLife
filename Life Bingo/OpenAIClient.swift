@@ -1088,34 +1088,70 @@ struct OpenAIClient {
             return "\n【上次輸出未通過驗證】\n\(previousError)\n請你修正後重新輸出，並確保完全符合本次的格式要求。\n"
         }()
 
-        let behaviorsCatalog: String = habitArchitecture.stages
-            .flatMap { st in st.behaviors }
-            .map { b in
-                "- \(b.behaviorId): \(b.title)｜cap=\(b.capabilityRef)｜lev=\(b.leverageRef)｜identity=\(b.identityImpact)"
-            }
+        // Build capability catalog + identity hints from STEP3 behaviors (so STEP4 tasks can be diverse but still goal-adjacent).
+        let capabilityCatalog: String = skillModel.requiredCapabilities
+            .map { c in "- \(c.capabilityId): \(c.name)｜\(c.description)" }
             .joined(separator: "\n")
+
+        let identityHintsByCapability: [String: [String]] = {
+            var map: [String: [String]] = [:]
+            let allBehaviors = habitArchitecture.stages.flatMap { $0.behaviors }
+            for b in allBehaviors {
+                let cap = b.capabilityRef
+                var arr = map[cap, default: []]
+                let hint = b.identityImpact.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !hint.isEmpty, !arr.contains(hint) {
+                    arr.append(hint)
+                }
+                map[cap] = arr
+            }
+            return map
+        }()
+
+        let identityHintsText: String = {
+            var lines: [String] = []
+            for cap in skillModel.requiredCapabilities.map({ $0.capabilityId }) {
+                let hints = (identityHintsByCapability[cap] ?? []).prefix(3)
+                if hints.isEmpty { continue }
+                lines.append("- \(cap): \(hints.joined(separator: " / "))")
+            }
+            return lines.joined(separator: "\n")
+        }()
 
         let prompt = """
         你是「Behavioral Scientist + Skill Acquisition Architect」。
         你要處理 STEP 4 — REINFORCEMENT COMPILATION（強化單位）。
-        為每個 behavior 生成 Bingo 強化單位。
+        你要為每個 capability 生成 5 種不同形式的強化單位（不得重複形式）。
         \(previousErrorBlock)
 
         【硬性禁止】
         - 禁止輸出 cadence 字：每天、每日、天天。
-        - 禁止新增新邏輯/新策略/新行為；只能把已存在的 behaviors 轉成更小的強化單位。
+        - 禁止新增新邏輯/新策略/新行為方向；只能做「強化單位」（≤60秒、一個完整動作循環）。
+        - 禁止把 step/title 原句換字當 task；要更細、更可立即做。
 
         【輸入】
         goal（sanitize 後）：\(safeGoal)
-        behaviors（不可新增，只可引用 behaviorId）：
-        \(behaviorsCatalog)
+        identityForm：\(normalization.identityForm)
+        capabilities（必須全部覆蓋）：
+        \(capabilityCatalog)
+
+        identityImpact hints（幫你寫 reinforcesIdentity；可參考但勿照抄口號）：
+        \(identityHintsText)
+
+        【形式（每個 capability 必須剛好各 1 個；不得重複）】
+        - 身體動作型
+        - 語言輸出型
+        - 環境改造型
+        - 微決策型
+        - 社交/外部承諾型（任何外部承諾載體都得：便條紙/鬧鐘命名/發訊息給自己/打卡一句話；但仍要 ≤60秒）
 
         【規則】
-        - 每個 reinforcementUnit 必須對應一個已存在的 behaviorId（behaviorRef）。
-        - 每個 bingoTask ≤60秒或一個完整動作循環。
-        - 每個 bingoTask 必須強化該 behavior 的 capabilityRef（reinforcesCapability）。
-        - 每個 bingoTask 必須強化該 behavior 的 identityImpact（reinforcesIdentity）。
-        - 不得新增新邏輯。
+        - 每個 reinforcementUnit 對應一個 capability（capabilityRef）。
+        - 每個 reinforcementUnit 必須標示 form（以上五選一）。
+        - 每個 reinforcementUnit 至少 1 個 bingoTask。
+        - 每個 bingoTask 必須 ≤60 秒或一個完整動作循環。
+        - 每個 bingoTask 的 reinforcesCapability 必須等於 capabilityRef。
+        - 每個 bingoTask 必須有 reinforcesIdentity（完成代表我是…），語氣務實、可落地。
 
         【輸出】
         只輸出 JSON：
@@ -1123,10 +1159,11 @@ struct OpenAIClient {
           "step": 4,
           "reinforcementUnits": [
             {
-              "behaviorRef": "B1",
+              "capabilityRef": "C1",
+              "form": "身體動作型",
               "bingoTasks": [
                 {
-                  "taskId": "B1-T1",
+                  "taskId": "C1-PHYS-1",
                   "text": "≤60秒具體行為",
                   "observable": "完成標誌",
                   "reinforcesCapability": "C1",
@@ -1136,6 +1173,10 @@ struct OpenAIClient {
             }
           ]
         }
+
+        【你輸出前必須自我檢查】
+        - 對每個 capability：5 種 form 都齊全，且無重複。
+        - 每個 unit 的 bingoTasks 至少 1 個。
 
         只回傳 JSON。
         """
@@ -1188,28 +1229,59 @@ struct OpenAIClient {
         }.joined(separator: "\n")
         for w in banned where allText.contains(w) { throw OpenAIError.parse("STEP4 輸出包含禁字：\(w)") }
 
-        let behaviorIds = Set(habitArchitecture.stages.flatMap { $0.behaviors.map { $0.behaviorId } })
         let capIds = Set(skillModel.requiredCapabilities.map { $0.capabilityId })
         if env.reinforcementUnits.isEmpty { throw OpenAIError.parse("STEP4 reinforcementUnits 不可為空") }
 
-        var covered: Set<String> = []
+        let requiredForms: Set<String> = ["身體動作型", "語言輸出型", "環境改造型", "微決策型", "社交/外部承諾型"]
+
+        // Validate: cover every capability with exactly the 5 distinct forms.
+        var formsByCap: [String: Set<String>] = [:]
+        var coveredCaps: Set<String> = []
+
         for unit in env.reinforcementUnits {
-            let ref = unit.behaviorRef.trimmingCharacters(in: .whitespacesAndNewlines)
-            if ref.isEmpty { throw OpenAIError.parse("STEP4 behaviorRef 不可為空") }
-            if !behaviorIds.contains(ref) { throw OpenAIError.parse("STEP4 behaviorRef 引用不存在 behaviorId：\(ref)") }
-            covered.insert(ref)
-            if unit.bingoTasks.isEmpty { throw OpenAIError.parse("STEP4 \(ref) bingoTasks 不可為空") }
+            let capRef = (unit.capabilityRef ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if capRef.isEmpty { throw OpenAIError.parse("STEP4 capabilityRef 不可為空") }
+            if !capIds.contains(capRef) { throw OpenAIError.parse("STEP4 capabilityRef 引用不存在 capabilityId：\(capRef)") }
+            coveredCaps.insert(capRef)
+
+            let form = (unit.form ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if form.isEmpty { throw OpenAIError.parse("STEP4 \(capRef) form 不可為空") }
+            if !requiredForms.contains(form) { throw OpenAIError.parse("STEP4 \(capRef) form 不在允許列表：\(form)") }
+
+            var formSet = formsByCap[capRef, default: []]
+            if formSet.contains(form) {
+                throw OpenAIError.parse("STEP4 \(capRef) form 重複：\(form)")
+            }
+            formSet.insert(form)
+            formsByCap[capRef] = formSet
+
+            if unit.bingoTasks.isEmpty { throw OpenAIError.parse("STEP4 \(capRef) [\(form)] bingoTasks 不可為空") }
             for t in unit.bingoTasks {
                 if t.taskId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { throw OpenAIError.parse("STEP4 taskId 不可為空") }
-                if t.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { throw OpenAIError.parse("STEP4 \(ref) text 不可為空") }
-                if t.observable.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { throw OpenAIError.parse("STEP4 \(ref) observable 不可為空") }
-                if !capIds.contains(t.reinforcesCapability) { throw OpenAIError.parse("STEP4 reinforcesCapability 引用不存在 capabilityId：\(t.reinforcesCapability)") }
+                if t.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { throw OpenAIError.parse("STEP4 \(capRef) text 不可為空") }
+                if t.observable.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { throw OpenAIError.parse("STEP4 \(capRef) observable 不可為空") }
+                if t.reinforcesCapability.trimmingCharacters(in: .whitespacesAndNewlines) != capRef {
+                    throw OpenAIError.parse("STEP4 \(capRef) reinforcesCapability 必須等於 capabilityRef（得到：\(t.reinforcesCapability)）")
+                }
+                if t.reinforcesIdentity.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    throw OpenAIError.parse("STEP4 \(capRef) reinforcesIdentity 不可為空")
+                }
             }
         }
 
-        // Ensure every behavior has at least one reinforcement unit.
-        if covered.count < behaviorIds.count {
-            throw OpenAIError.parse("STEP4 reinforcementUnits 必須覆蓋所有 behaviors（缺少：\(behaviorIds.subtracting(covered).joined(separator: ", "))）")
+        // Ensure every capability is covered.
+        if coveredCaps.count < capIds.count {
+            throw OpenAIError.parse("STEP4 reinforcementUnits 必須覆蓋所有 capabilities（缺少：\(capIds.subtracting(coveredCaps).joined(separator: ", "))）")
+        }
+
+        // Ensure every capability has the 5 forms.
+        for cap in capIds {
+            let forms = formsByCap[cap] ?? []
+            if forms != requiredForms {
+                let missing = requiredForms.subtracting(forms).joined(separator: ", ")
+                let extra = forms.subtracting(requiredForms).joined(separator: ", ")
+                throw OpenAIError.parse("STEP4 \(cap) 必須剛好包含 5 種形式；缺少：\(missing.isEmpty ? "無" : missing)；多出：\(extra.isEmpty ? "無" : extra)")
+            }
         }
 
         return env.reinforcementUnits
