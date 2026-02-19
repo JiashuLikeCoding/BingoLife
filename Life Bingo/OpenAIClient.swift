@@ -1572,6 +1572,7 @@ struct OpenAIClient {
 
             if let u = decoded.usage {
                 print("[OpenAI][\(label)] usage input=\(u.input_tokens) output=\(u.output_tokens) total=\(u.total_tokens)")
+                OpenAIStore.setLastUsage(label: label, input: u.input_tokens, output: u.output_tokens, total: u.total_tokens)
             } else {
                 print("[OpenAI][\(label)] usage (missing)")
             }

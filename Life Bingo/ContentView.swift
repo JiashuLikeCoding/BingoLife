@@ -1417,6 +1417,28 @@ struct HabitGuideSection: View {
             if !isRefreshing {
                 if let guide {
                     VStack(alignment: .leading, spacing: 10) {
+                        // Debug: show last token usage even when not running via Xcode
+                        let passAUsage = OpenAIStore.getLastUsage(label: "PASS A")
+                        let passBUsage = OpenAIStore.getLastUsage(label: "PASS B")
+                        if passAUsage != nil || passBUsage != nil {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Token 使用量（最近一次）")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundStyle(Theme.textPrimary)
+                                if let passAUsage {
+                                    Text("PASS A: \(passAUsage)")
+                                        .font(.system(size: 12))
+                                        .foregroundStyle(Theme.textSecondary)
+                                }
+                                if let passBUsage {
+                                    Text("PASS B: \(passBUsage)")
+                                        .font(.system(size: 12))
+                                        .foregroundStyle(Theme.textSecondary)
+                                }
+                            }
+                            .padding(.vertical, 4)
+                        }
+
                         if let norm = guide.goalNormalization {
                             DisclosureGroup(isExpanded: $isNormalizationExpanded) {
                                 VStack(alignment: .leading, spacing: 10) {

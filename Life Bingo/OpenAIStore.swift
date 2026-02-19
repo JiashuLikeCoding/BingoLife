@@ -13,6 +13,8 @@ enum OpenAIStore {
     private static let storedAPIKey = "openai.apiKey"
     private static let storedModelKey = "openai.model"
 
+    private static let storedLastUsagePrefix = "openai.lastUsage."
+
     static var apiKey: String {
         get {
             let stored = UserDefaults.standard.string(forKey: storedAPIKey) ?? ""
@@ -52,4 +54,18 @@ enum OpenAIStore {
             }
         }
     }
+
+    static func setLastUsage(label: String, input: Int, output: Int, total: Int) {
+        let key = storedLastUsagePrefix + label
+        let value = "input=\(input) output=\(output) total=\(total)"
+        UserDefaults.standard.set(value, forKey: key)
+    }
+
+    static func getLastUsage(label: String) -> String? {
+        let key = storedLastUsagePrefix + label
+        let value = UserDefaults.standard.string(forKey: key)
+        let trimmed = (value ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
 }
+
