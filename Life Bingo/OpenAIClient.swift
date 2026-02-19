@@ -1530,7 +1530,7 @@ struct OpenAIClient {
         let safeGoal = sanitizeGoal(goal)
         let promptGoal = safeGoal.isEmpty ? goal : safeGoal
 
-        func requestJSON<T>(maxOutputTokens: Int, prompt: String, parse: (Data) throws -> T, emptyError: String, parseErrorPrefix: String) async throws -> T {
+        func requestJSON<T>(label: String, maxOutputTokens: Int, prompt: String, parse: (Data) throws -> T, emptyError: String, parseErrorPrefix: String) async throws -> T {
             let requestBody: [String: Any] = [
                 "model": model,
                 "input": [
@@ -1569,6 +1569,13 @@ struct OpenAIClient {
 
             let decoded = try JSONDecoder().decode(OpenAIResponse.self, from: data)
             if let error = decoded.error { throw OpenAIError.server(error.message) }
+
+            if let u = decoded.usage {
+                print("[OpenAI][\(label)] usage input=\(u.input_tokens) output=\(u.output_tokens) total=\(u.total_tokens)")
+            } else {
+                print("[OpenAI][\(label)] usage (missing)")
+            }
+
             let text = decoded.outputText.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty, let jsonData = text.data(using: .utf8) else { throw OpenAIError.parse(emptyError) }
 
@@ -1723,7 +1730,7 @@ struct OpenAIClient {
 
         var passA: PassAResponse
         do {
-            passA = try await requestJSON(maxOutputTokens: 2000, prompt: passAPrompt, parse: { data in
+            passA = try await requestJSON(label: "PASS A", maxOutputTokens: 2000, prompt: passAPrompt, parse: { data in
                 try JSONDecoder().decode(PassAResponse.self, from: data)
             }, emptyError: "PASS A 回應內容為空", parseErrorPrefix: "PASS A JSON 解析失敗")
             try validatePassA(passA)
@@ -1735,7 +1742,7 @@ struct OpenAIClient {
 請只修正錯誤點，重新輸出完整 JSON（不要額外文字）。
 \(passAPrompt)
 """
-            passA = try await requestJSON(maxOutputTokens: 2000, prompt: retryPrompt, parse: { data in
+            passA = try await requestJSON(label: "PASS A (retry)", maxOutputTokens: 2000, prompt: retryPrompt, parse: { data in
                 try JSONDecoder().decode(PassAResponse.self, from: data)
             }, emptyError: "PASS A 回應內容為空", parseErrorPrefix: "PASS A JSON 解析失敗")
             try validatePassA(passA)
@@ -1838,7 +1845,7 @@ struct OpenAIClient {
 
         var passB: PassBResponse
         do {
-            passB = try await requestJSON(maxOutputTokens: 2200, prompt: passBPrompt, parse: { data in
+            passB = try await requestJSON(label: "PASS B", maxOutputTokens: 2200, prompt: passBPrompt, parse: { data in
                 try JSONDecoder().decode(PassBResponse.self, from: data)
             }, emptyError: "PASS B 回應內容為空", parseErrorPrefix: "PASS B JSON 解析失敗")
             try validatePassB(passB)
@@ -1849,7 +1856,7 @@ struct OpenAIClient {
 請只修正錯誤點，重新輸出完整 JSON（不要額外文字）。
 \(passBPrompt)
 """
-            passB = try await requestJSON(maxOutputTokens: 2200, prompt: retryPrompt, parse: { data in
+            passB = try await requestJSON(label: "PASS B (retry)", maxOutputTokens: 2200, prompt: retryPrompt, parse: { data in
                 try JSONDecoder().decode(PassBResponse.self, from: data)
             }, emptyError: "PASS B 回應內容為空", parseErrorPrefix: "PASS B JSON 解析失敗")
             try validatePassB(passB)
@@ -2243,8 +2250,15 @@ struct OpenAIResponse: Decodable {
         let message: String
     }
 
+    struct Usage: Decodable {
+        let input_tokens: Int
+        let output_tokens: Int
+        let total_tokens: Int
+    }
+
     let output: [OutputItem]?
     let error: APIError?
+    let usage: Usage?
 
     var outputText: String {
         guard let output = output else { return "" }
