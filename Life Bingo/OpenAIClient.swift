@@ -1640,10 +1640,19 @@ struct OpenAIClient {
             if Set(idx).count != idx.count {
                 throw OpenAIError.parse("PASS A stage 重複")
             }
+            if Set(idx) != Set([0, 1, 2, 3, 4]) {
+                throw OpenAIError.parse("PASS A stages 必須包含 stage=0..4")
+            }
+
+            for st in a.stages {
+                if st.steps.isEmpty {
+                    throw OpenAIError.parse("PASS A stage \(st.stage) steps 不可為空")
+                }
+            }
 
             let totalSteps = a.stages.reduce(0) { $0 + $1.steps.count }
-            if totalSteps < 4 || totalSteps > 12 {
-                throw OpenAIError.parse("PASS A 總步驟數不合理（期望 4–12），目前：\(totalSteps)")
+            if totalSteps < 5 || totalSteps > 12 {
+                throw OpenAIError.parse("PASS A 總步驟數不合理（期望 5–12），目前：\(totalSteps)")
             }
 
             for st in a.stages {
@@ -1723,9 +1732,15 @@ struct OpenAIClient {
           "category": "環境/微決策/身體/語言/社交"
         }
       ]
-    }
+    },
+    {"stage":1,"stageName":"發芽","stageRationale":"...","steps":[{"stepId":"P1","title":"...","capabilityBuilt":"...","ifSkipped":"...","smallWinMechanism":"...","fallback":"...","durationSec":45,"category":"..."}]},
+    {"stage":2,"stageName":"長葉","stageRationale":"...","steps":[{"stepId":"L1","title":"...","capabilityBuilt":"...","ifSkipped":"...","smallWinMechanism":"...","fallback":"...","durationSec":45,"category":"..."}]},
+    {"stage":3,"stageName":"開花","stageRationale":"...","steps":[{"stepId":"B1","title":"...","capabilityBuilt":"...","ifSkipped":"...","smallWinMechanism":"...","fallback":"...","durationSec":45,"category":"..."}]},
+    {"stage":4,"stageName":"扎根","stageRationale":"...","steps":[{"stepId":"R1","title":"...","capabilityBuilt":"...","ifSkipped":"...","smallWinMechanism":"...","fallback":"...","durationSec":45,"category":"..."}]}
   ]
 }
+
+硬規則：stages 必須包含 stage=0,1,2,3,4 且每個 stage 至少 1 個 step；總 step 數至少 5。
 """
 
         var passA: PassAResponse
