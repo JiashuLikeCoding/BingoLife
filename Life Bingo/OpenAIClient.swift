@@ -1804,9 +1804,12 @@ struct OpenAIClient {
                     if !(30...600).contains(s.durationSec) { throw OpenAIError.parse("PASS B step \(s.stepId) durationSec 必須為 30–600") }
                     if s.bingoTasks.tasks.isEmpty { throw OpenAIError.parse("PASS B step \(s.stepId) bingoTasks 不可為空") }
                     for t in s.bingoTasks.tasks {
+                        // Do NOT hard-lock bingo task duration. We only require the task itself to be a concrete, immediate action.
                         try validateNoBannedText(t.text)
-                        let dur = t.durationSec ?? 45
-                        if dur < 10 || dur > 60 { throw OpenAIError.parse("PASS B task durationSec 必須為 10–60（step \(s.stepId)）") }
+                        if let dur = t.durationSec {
+                            if dur <= 0 { throw OpenAIError.parse("PASS B task durationSec 必須為正數（step \(s.stepId)）") }
+                            if dur > 1800 { throw OpenAIError.parse("PASS B task durationSec 過長（>1800 秒）（step \(s.stepId)）") }
+                        }
                     }
                 }
             }
@@ -1828,7 +1831,8 @@ struct OpenAIClient {
 
 ⚠️ 禁止出現：每天、每日、天天、打卡。
 ⚠️ 禁止時間遞增模板、連續X天。
-⚠️ bingoTasks 必須是可立即做的細動作（10–60秒，一個完整動作循環）。
+⚠️ bingoTasks 必須是可立即做的細動作（一個完整動作循環）。
+⚠️ durationSec 不要鎖死（可依用戶心情/動機/昨天難度調整）；若有填寫，請給一個合理估計秒數。
 
 【PASS A steps（不可改動 stepId/title/fallback/durationSec/category，只可補 bingoTasks）】
 \(passAStepsText)
@@ -1893,7 +1897,8 @@ struct OpenAIClient {
                         let taskId = (t.taskId ?? "\(sid)-T\(idx + 1)").trimmingCharacters(in: .whitespacesAndNewlines)
                         let mapsTo = (t.mapsToStep ?? sid).trimmingCharacters(in: .whitespacesAndNewlines)
                         let text = t.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                        let dur = max(10, min(60, t.durationSec ?? 45))
+                        let durRaw = t.durationSec ?? 45
+                        let dur = max(5, min(1800, durRaw))
                         let observable = (t.observable ?? "完成：\(text)").trimmingCharacters(in: .whitespacesAndNewlines)
                         let sp = min(0.99, max(0.01, t.successProbability ?? 0.75))
                         return BingoTask(taskId: taskId, mapsToStep: mapsTo, derivedFromInterventionIds: [], text: text, durationSec: dur, observable: observable, successProbability: sp)
